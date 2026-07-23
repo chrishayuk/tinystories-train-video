@@ -1,0 +1,24 @@
+{
+  "version": "v11",
+  "core": "tiny-model-v11",
+  "architecture": "TinyModel",
+  "model_type": "tinymodel",
+  "vocab_size": 71261,
+  "dim": 512,
+  "n_layers": 20,
+  "ffn_dim": 2048,
+  "n_heads": 8,
+  "n_kv_heads": 4,
+  "max_seq": 256,
+  "rope_theta": 10000.0,
+  "tie_embeddings": true,
+  "tokenizer": "v11",
+  "training": {
+    "corpus": "TinyStories",
+    "phase2_tokens": 16000000,
+    "phase3_tokens": 8000000,
+    "phase2_lr": 3e-4,
+    "phase3_lr": 1.5e-4,
+    "phase3_strategy": "frozen_ffn_retrain_attention"
+  }
+}

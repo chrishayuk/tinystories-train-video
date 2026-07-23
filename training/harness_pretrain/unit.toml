@@ -1,0 +1,9 @@
+name = "v11-pretrain"
+version = "0.1.0"
+python = "3.11"
+
+[entrypoints]
+train = "sh run.sh"
+
+[requires]
+min_vram_gb = 8

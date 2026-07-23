@@ -1,0 +1,9 @@
+{
+  "total_tokens": 16000000,
+  "milestone_tokens": [0, 100000, 1000000, 5000000, 16000000],
+  "batch_size": 4,
+  "lr": 3e-4,
+  "warmup_steps": 100,
+  "metrics_every": 20,
+  "seed": 42
+}
