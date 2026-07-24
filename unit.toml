@@ -3,7 +3,7 @@ version = "0.1.0"
 python = "3.11"
 
 [entrypoints]
-train = "sh run.sh"
+train = "sh training/harness_pretrain/run.sh"
 
 [requires]
 min_vram_gb = 8
