@@ -3,4 +3,12 @@ __pycache__/
 .DS_Store
 training/data/
 *.pt
+*.safetensors
 script/
+
+# harness_pretrain standalone runs (uv run train.py): local checkpoints,
+# metrics, and chuk-train data: staging -- generated wherever it's run from,
+# never meant to be committed.
+ckpt/
+metrics.jsonl
+training/harness_pretrain/data/
