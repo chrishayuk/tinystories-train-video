@@ -5,5 +5,5 @@
 # this unit actually adds beyond the base environment get installed.
 set -e
 cd "$(dirname "$0")"
-python3 -m pip install --quiet sentencepiece "datasets>=2.18"
+python3 -m pip install --quiet sentencepiece "datasets>=2.18" safetensors
 exec python3 train.py

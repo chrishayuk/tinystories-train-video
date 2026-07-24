@@ -28,6 +28,7 @@ from pathlib import Path
 
 import torch
 import torch.nn.functional as F
+from safetensors.torch import load_file as load_safetensors, save_file as save_safetensors
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
@@ -35,6 +36,12 @@ sys.path.insert(0, str(HERE))
 HUB_SHA = "f54c09fd23315a6f9c86f9dc80f725de7d8f9c64"  # pinned, matches show_data.py
 READY_MARKER = ".ready"
 TOKENIZER_HASH = "v11-native-sp"
+# Protocol constant (chuk-train-proto/src/constants.rs CHECKPOINT_MODEL_FILE) --
+# the control plane's ingest_checkpoint() looks for exactly this filename inside
+# each step_<n>/ dir and silently skips registration if it's missing. Must be
+# real safetensors, not a renamed torch.save file: lazarus's load_checkpoint
+# and any other downstream consumer parses it as such.
+MODEL_FILE = "model.safetensors"
 
 DEFAULT_MILESTONE_TOKENS = [0, 100_000, 1_000_000, 5_000_000, 16_000_000]
 
@@ -133,7 +140,8 @@ def main() -> None:
     if resume_dir and (Path(resume_dir) / "meta.json").is_file():
         meta = json.loads((Path(resume_dir) / "meta.json").read_text())
         start_step = int(meta.get("step", 0))
-        model.load_state_dict(torch.load(Path(resume_dir) / "model.pt", map_location=device))
+        state = load_safetensors(str(Path(resume_dir) / MODEL_FILE), device=str(device))
+        model.load_state_dict(state)
         print(f"[v11-pretrain] resumed from step {start_step}", flush=True)
 
     total_steps = max(1, total_tokens // tokens_per_step)
@@ -147,7 +155,11 @@ def main() -> None:
         model.train()
         step_dir = ckpt_dir / f"step_{step}"
         step_dir.mkdir(parents=True, exist_ok=True)
-        torch.save(model.state_dict(), step_dir / "model.pt")
+        # embed.weight and lm_head.weight are tied (same storage, TinyModel's own
+        # weight-tying) -- safetensors refuses to save aliased tensors, so clone
+        # every entry to break the sharing before saving.
+        state = {k: v.detach().clone().contiguous().cpu() for k, v in model.state_dict().items()}
+        save_safetensors(state, str(step_dir / MODEL_FILE))
         (step_dir / "meta.json").write_text(json.dumps({
             "step": step, "arch": "tinymodel-115M dim512 L20",
             "tokenizer_hash": TOKENIZER_HASH, "tokens": step * tokens_per_step,
