@@ -3,7 +3,7 @@
   "core": "tiny-model-v11",
   "architecture": "TinyModel",
   "model_type": "tinymodel",
-  "vocab_size": 71261,
+  "vocab_size": 71260,
   "dim": 512,
   "n_layers": 20,
   "ffn_dim": 2048,
