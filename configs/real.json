@@ -5,5 +5,11 @@
   "lr": 3e-4,
   "warmup_steps": 100,
   "metrics_every": 20,
-  "seed": 42
+  "seed": 42,
+
+  "_data": "Act 1e's filmed run. Pre-tokenized with the published v11 build, so no tokenizer runs on the worker at all -- the GPU does nothing but train. expect_content_sha is checked against what chuk-train actually staged; a mismatch refuses before a single step. See train.py's CATALOG_STREAMS for the entry this must NOT be pointed at.",
+  "data": {
+    "dataset": "tiny-model/v11-rust-tokenized-phase1",
+    "expect_content_sha": "67603f8ef3e67bd36676d8ad88b96f604c6d7f38ed15b7ea0910d32c93440f38"
+  }
 }
