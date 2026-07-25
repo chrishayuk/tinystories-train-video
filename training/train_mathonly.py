@@ -87,8 +87,39 @@ def report_samples(model, tok, device, max_seq, label):
     return rows
 
 
+def copy_run_log(step_dir: Path, replay_log: Path | None) -> None:
+    """Drop the run's own terminal log and metric series beside the weights.
+
+    The harness collects `<sandbox>/ckpt/step_*` and walks the whole subtree, so
+    anything written in here uploads with the checkpoint. Nothing else does:
+    start_capture writes into the unit directory, which no output rule matches,
+    so `train_replay.jsonl` has until now died with the runtime -- and it is the
+    exact-timing source replay_run.py needs to play a finished run back at camera
+    speed. Losing it means losing the footage while keeping the weights.
+
+    A snapshot per boundary rather than one at the end, because a run that dies
+    at step 9,000 should still leave a replayable log of the first 9,000. ~100KB
+    against a 606MB checkpoint, so the duplication costs nothing worth counting.
+
+    Never fails the checkpoint: the weights are the point, this is the record.
+    """
+    import os
+    import shutil
+    sources = [replay_log] if replay_log else []
+    metrics = os.environ.get("CHUK_METRICS", "")
+    if metrics:
+        sources.append(Path(metrics))
+    for src in sources:
+        try:
+            if src.is_file() and src.stat().st_size:
+                shutil.copyfile(src, step_dir / src.name)
+        except OSError:
+            pass
+
+
 def write_harness_ckpt(model, ckpt_dir: Path, step: int, tokens: int, cfg,
-                       provenance: dict, samples: list | None = None):
+                       provenance: dict, samples: list | None = None,
+                       replay_log: Path | None = None):
     """step_<n>/model.safetensors + meta.json + .ready -- the layout the control
     plane's ingest looks for. `.ready` is touched last, so a checkpoint that is
     still being written is never picked up.
@@ -119,6 +150,9 @@ def write_harness_ckpt(model, ckpt_dir: Path, step: int, tokens: int, cfg,
         # read_emergence() already knows how to read: prompt -> continuation.
         meta["samples"] = {prompt: cont for prompt, _note, cont in samples}
     (d / "meta.json").write_text(json.dumps(meta, indent=2) + "\n")
+    copy_run_log(d, replay_log)
+    # Last, always: the collector treats this as "every file is on disk", so
+    # anything written after it can be uploaded in a half-finished state.
     (d / ".ready").touch()
     print(f"  [harness ckpt] step_{step} ({tokens/1e6:.2f}M tok)", flush=True)
 
@@ -238,8 +272,7 @@ def main():
             f"\nREFUSING to run: {out_path} already exists.\n{extra}"
             f"\n  To train again anyway: --force (overwrites both the checkpoint "
             f"and the log).\n")
-    if not args.smoke:
-        start_capture(RUN_DIR)
+    replay_log = start_capture(RUN_DIR) if not args.smoke else None
 
     from tiny_model_v11 import load_from_artifacts
     base, cfg = load_from_artifacts(str(ARTEFACTS), checkpoint=args.base_checkpoint, device="cpu")
@@ -318,7 +351,8 @@ def main():
     # `list_checkpoints` a minute in is the other half, and belongs to whoever
     # dispatched the run.
     if chuk_ckpt:
-        write_harness_ckpt(base, Path(chuk_ckpt), 0, 0, cfg, provenance, step0)
+        write_harness_ckpt(base, Path(chuk_ckpt), 0, 0, cfg, provenance, step0,
+                           replay_log)
 
     import random
     rng = random.Random(args.seed)
@@ -398,7 +432,8 @@ def main():
                     # than one with none. Greedy, so this is a repeat of work
                     # done moments later at best, not a divergence.
                     write_harness_ckpt(base, Path(chuk_ckpt), step, seen_tokens, cfg,
-                                       provenance, sample(base, tok, device, cfg.max_seq))
+                                       provenance, sample(base, tok, device, cfg.max_seq),
+                                       replay_log)
                 else:
                     snap = out_path.with_name(f"{out_path.stem}_s{step}{out_path.suffix}")
                     torch.save(base.state_dict(), snap)
@@ -417,7 +452,8 @@ def main():
     final = report_samples(base, tok, device, cfg.max_seq, f"FINAL ({seen_tokens/1e6:.2f}M tok)")
 
     if chuk_ckpt:
-        write_harness_ckpt(base, Path(chuk_ckpt), step, seen_tokens, cfg, provenance, final)
+        write_harness_ckpt(base, Path(chuk_ckpt), step, seen_tokens, cfg, provenance, final,
+                           replay_log)
 
     torch.save(base.state_dict(), out_path)
     print(f"saved {out_path}")
