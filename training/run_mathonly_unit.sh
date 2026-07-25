@@ -19,8 +19,11 @@ cd "$(dirname "$0")/.."
 python3 -m pip install --quiet "tokenizers>=0.20" "datasets>=2.18" \
     "safetensors>=0.4" "huggingface_hub>=0.24"
 
-BASE_REPO=chrishayuk/v11-tinystories-115m-base
-EXPECT_SHA=1841e0581574629716b646dacd4e70feaca153a8adc5ecb0b77e0e2ebdf78d9c
+# export, not plain assignment: the heredoc below is quoted (<<'PY') so nothing is
+# shell-expanded inside it and the Python reads these from the environment. Without
+# export they are shell-local and the child dies on KeyError.
+export BASE_REPO=chrishayuk/v11-tinystories-115m-base
+export EXPECT_SHA=1841e0581574629716b646dacd4e70feaca153a8adc5ecb0b77e0e2ebdf78d9c
 
 echo "[mathonly] fetching base from $BASE_REPO"
 python3 - <<'PY'
