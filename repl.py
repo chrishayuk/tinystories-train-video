@@ -63,13 +63,26 @@ from demo_common import (
 
 # Act 2a. Slots where a NUMBER is the only sensible continuation -- the point
 # being what the model ranks, not what it generates. Kept next to the code that
-# uses them so the four figures the script quotes are re-derivable from one place.
+# uses them so the figures the script quotes are re-derivable from one place.
+#
+# Ordered as a ladder from pure idiom down to arithmetic, because the *gradient*
+# is the finding: this model is not blind to numbers, it is fluent in the shapes
+# they appear in and cannot combine them. Chosen by measuring ~20 candidates on
+# the published checkpoint (2026-07-25) and keeping the ones that separate.
+#
+# Row 2 is the one that matters. It scores 91.8% with the count sequence ranked
+# correctly -- three > four > five > six -- so the distribution looks like a model
+# that can count. Then generate from it and it emits "three, four, four, five,
+# five, five..." forever, because each step is a local next-token guess with no
+# state, and TinyStories almost never counts past five. Metric says competent,
+# behaviour says otherwise: Act 3c's whole argument, two acts early.
 SLOT_PROMPTS = [
     ("Once upon a time there were", "story idiom — no counting required"),
-    ("She counted the apples. There were", "counting, but no arithmetic"),
-    ("Lily had three apples and Tom gave her four more. Now Lily has",
-     "needs 3 + 4 = seven"),
-    ("Tom had two cats and one dog. Altogether he had", "needs 2 + 1 = three"),
+    ("Lily counted her toys. One, two,", "reciting a sequence — LOOKS like counting"),
+    ("She counted the apples. There were", "counting context, no arithmetic"),
+    ("There were five ducks. Two swam away. Now there are",
+     "needs 5 − 2 = three — watch it echo 'two' from the prompt"),
+    ("Anna is four years old. Next year she will be", "needs 4 + 1 = five"),
 ]
 
 
@@ -255,14 +268,13 @@ class Session:
 
         # Computed, never hardcoded: these figures are properties of whichever
         # checkpoint is loaded, and a retrain silently invalidates any constant.
-        idiom, counting = rows[0][3], rows[1][3]
-        arith = [r[3] for r in rows[2:]]
-        reach = [t.lstrip("▁") for t, _ in rows[2][2][:3]]
-        print(f"\n  {DIM}idiom {idiom:.1%} · counting {counting:.1%} · "
-              f"arithmetic {min(arith):.1%}–{max(arith):.1%} "
-              f"(reaches for {', '.join(reach)}){RESET}")
-        print(f"  {DIM}Three tiers: it knows a quantity belongs after \"she counted\","
-              f" and cannot combine two.{RESET}\n")
+        top_share, bottom_share = rows[0][3], rows[-1][3]
+        print(f"\n  {DIM}{top_share:.1%} at the top of the ladder, "
+              f"{bottom_share:.1%} at the bottom — a gradient, not a cliff.{RESET}")
+        print(f"  {DIM}Row 2 is the trap: high mass, the count sequence ranked "
+              f"correctly, and{RESET}")
+        print(f"  {DIM}it still cannot count. Generate from it and see "
+              f"(/greedy, then type it).{RESET}\n")
 
 
 BANNER = f"""
