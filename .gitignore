@@ -12,3 +12,5 @@ script/
 ckpt/
 metrics.jsonl
 training/harness_pretrain/data/
+# the local 16M-token pretrain: checkpoints, metrics and its stdout log
+run_pretrain/

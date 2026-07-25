@@ -1,0 +1,21 @@
+{
+  "total_tokens": 16000000,
+  "milestone_tokens": [0, 100000, 1000000, 2000000, 5000000, 8000000, 12000000, 16000000],
+  "batch_size": 4,
+  "lr": 3e-4,
+  "warmup_steps": 100,
+  "metrics_every": 20,
+  "seed": 42,
+
+  "sample_prompts": [
+    "Once upon a time",
+    "Tom found a lost mitten in the snow. He",
+    "Lily had three apples. Tom gave her four more. Now Lily has"
+  ],
+
+  "_no_data_block": "DELIBERATE. With no `data:` block train.py streams TinyStories straight from HuggingFace at the pinned revision (HUB_SHA f54c09fd...) and needs no infrastructure at all -- no chuk-datasets, no control plane, no join token. That is what makes this config runnable from one Colab cell today, while the catalog route is blocked on a read-scoped key. Cost of the choice, stated plainly: the tokenizer runs on the worker, and token ORDER comes from this seed rather than from a content-addressed artifact, so this run is reproducible-given-the-seed but not bit-reproducible the way configs/real.json is. Use real.json for the filmed Act 1e dispatch once the key exists.",
+
+  "_guards": "Two of train.py's four refusals cannot fire without a `data:` block, because there are no staged shards to check: the content_sha pin and the decode-to-English test. The two that DO fire are the ones that matter for a fresh pretrain -- the vendored tokenizer must hash to the published v11 build, and config.json's vocab_size must equal the tokenizer's. The corpus identity here rests on HuggingFace's pinned revision instead.",
+
+  "_milestones": "The five canonical emergence captures (0 / 100k / 1M / 5M / 16M) plus 2M, 8M and 12M. The extras are pure insurance against a Colab disconnect: a drop then costs at most ~4M tokens of work instead of ~11M, and CHUK_RESUME_CKPT picks up from the last one. The emergence table takes whichever five it wants."
+}
