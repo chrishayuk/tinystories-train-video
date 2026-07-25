@@ -66,8 +66,14 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
 
-OUT = HERE / "data" / "cells_corpus.jsonl"
-TOKEN_MAP = HERE / "data" / "cells_token_map.json"
+# Its OWN directory, not shared with the maths-only corpus. The chuk-datasets
+# identity is computed over a ROOT DIRECTORY, so two corpora in one directory
+# hash into each other: the first build of this one produced an identity that
+# silently included mathonly_corpus.jsonl, and would have changed the moment
+# anything else was written beside it. It also means a local rebuild of the
+# maths-only corpus would no longer match its published ff7bf26b identity.
+OUT = HERE / "data" / "cells" / "cells_corpus.jsonl"
+TOKEN_MAP = HERE / "data" / "cells" / "cells_token_map.json"
 
 # Pinned, and the same revision the maths-only corpus and show_data.py use --
 # the two arms must replay the same stories or the comparison has a second
