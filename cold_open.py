@@ -29,8 +29,10 @@ import torch
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
-TOKENIZER = HERE / "tokenizer" / "tokenizer.json"
-ARTEFACTS = HERE / "model_v11"
+from demo_common import (
+    ARTEFACTS, BOLD, DIM, GREEN, NUMBER_WORDS, RESET, TOKENIZER, V11Tokenizer,
+    check_vocab, missing_checkpoint_message,
+)
 
 STORY_PROMPTS = [
     "Once upon a time",
@@ -47,75 +49,14 @@ MATHS_PROMPTS = [
 ]
 
 
-class V11Tokenizer:
-    """The published v11 build (pip install v11-tokenizer / HF
-    chrishayuk/v11-tokenizer), wrapped in the small SentencePiece-shaped
-    interface the rest of this file uses. Verified by hash on load, so what
-    goes on camera is provably the published artifact."""
-
-    SHA256 = "10dd51100331ab503115db23eee7e8dc3e360e3aed697c8a2e1b12b8f46031ae"
-
-    def __init__(self, path):
-        import hashlib
-        from tokenizers import Tokenizer
-        if not path.exists():
-            sys.exit(f"missing tokenizer: {path}")
-        actual = hashlib.sha256(path.read_bytes()).hexdigest()
-        if actual != self.SHA256:
-            sys.exit(f"{path} is not the published v11 build\n"
-                     f"  expected {self.SHA256}\n  found    {actual}\n"
-                     f"  re-fetch: huggingface.co/chrishayuk/v11-tokenizer")
-        self.t = Tokenizer.from_file(str(path))
-        self._inv = {i: p for p, i in self.t.get_vocab().items()}
-
-    def encode(self, text):
-        return self.t.encode(text).ids
-
-    def decode(self, ids):
-        return self.t.decode(ids)
-
-    def id_to_piece(self, i):
-        return self._inv.get(i, "?")
-
-    def _special(self, tok):
-        i = self.t.token_to_id(tok)
-        return -1 if i is None else i
-
-    def bos_id(self):
-        return self._special("<s>")
-
-    def eos_id(self):
-        return self._special("</s>")
-
-    def get_piece_size(self):
-        return self.t.get_vocab_size()
-
-
-def check_vocab(config, tok, checkpoint):
-    """The published tokenizer has 71260 pieces. A checkpoint built against
-    any other vocabulary cannot be driven by it -- the ids would mean
-    different things and generation is fluent nonsense at perplexity ~1e7.
-    Refuse instead, and say what to do about it."""
-    if config.vocab_size != tok.get_piece_size():
-        sys.exit(
-            f"\n  checkpoint/tokenizer mismatch -- refusing to generate.\n"
-            f"    {checkpoint}: vocab {config.vocab_size:,}\n"
-            f"    published v11 tokenizer: vocab {tok.get_piece_size():,}\n\n"
-            f"  This checkpoint predates the published tokenizer and is retired.\n"
-            f"  Every demo now runs on the Act 1e model -- see SCRIPT.md,\n"
-            f'  "What still needs running" items 1 and 5.\n')
 
 
 def no_model_yet(path):
-    sys.exit(
-        f"\n  no checkpoint at {path}\n\n"
-        f"  The pre-existing 71261-vocab model has been retired -- every demo\n"
-        f"  that generates text now runs on the Act 1e model, which has not been\n"
-        f"  trained yet. See SCRIPT.md, \"What still needs running\" item 1.\n\n"
-        f"  show_data.py, show_params.py and the v11 CLI need no checkpoint\n"
-        f"  and work today.\n")
+    sys.exit(missing_checkpoint_message(path) +
+             "\n  show_data.py, show_params.py and the v11 CLI need no checkpoint.\n")
 
-def load(checkpoint="model_compiled.pt", device=None):
+
+def load(checkpoint="model_full.pt", device=None):
     from tiny_model_v11 import load_from_artifacts
 
     if not (ARTEFACTS / "artifacts" / checkpoint).exists():
@@ -177,10 +118,6 @@ SLOT_PROMPTS = [
     ("Tom had two cats and one dog. Altogether he had", "needs 2 + 1 = three"),
 ]
 
-NUMBER_WORDS = {"zero", "one", "two", "three", "four", "five", "six", "seven",
-                "eight", "nine", "ten", "eleven", "twelve"}
-
-
 @torch.no_grad()
 def next_token_probs(model, sp, prompt, k=10):
     device = next(model.parameters()).device
@@ -200,9 +137,11 @@ def show_slots(model, sp):
     print("\n  Four slots where a number is the only sensible next word.")
     print("  Top-10 predictions, and what share of that mass is a number word:\n")
 
+    shares = []
     for prompt, note in SLOT_PROMPTS:
         top = next_token_probs(model, sp, prompt)
         share = sum(p for t, p in top if t.lstrip("▁").lower() in NUMBER_WORDS)
+        shares.append((share, top))
         print(f"  \033[2m{note}\033[0m")
         print(f"  {prompt} \033[1m___\033[0m")
         parts = []
@@ -213,8 +152,19 @@ def show_slots(model, sp):
         print("    " + "  ".join(parts))
         print(f"    number-word mass: \033[1m{share:.1%}\033[0m\n")
 
-    print("  It is 98.9% certain about 'two' where a story convention demands")
-    print("  it — and reaches for 'a', 'some', 'many' where arithmetic does.")
+    # Read off the measured values rather than hardcoding them. The previous
+    # version asserted "98.9% certain about 'two'" -- a figure from the retired
+    # checkpoint -- which contradicted the numbers printed directly above it on
+    # the same screen. On camera that is a visible error, and re-measuring after
+    # every retrain is not something to rely on remembering.
+    idiom_share, idiom_top = shares[0]
+    idiom_word, idiom_p = idiom_top[0][0].lstrip("▁"), idiom_top[0][1]
+    arith = [s for s, _ in shares[2:]]
+    reach = [t.lstrip("▁") for t, _ in shares[2][1][:3]]
+    print(f"  It is {idiom_p:.1%} certain about {idiom_word!r} where a story convention")
+    print(f"  demands it ({idiom_share:.1%} number-word mass) — and collapses to "
+          f"{min(arith):.1%}–{max(arith):.1%}")
+    print(f"  where arithmetic does, reaching for {', '.join(repr(w) for w in reach)}.")
     print("  Number words are narrative texture here, not quantities.")
 
 
@@ -238,8 +188,8 @@ def main():
     ap.add_argument("--slots", action="store_true",
                     help="next-word probabilities at number slots")
     ap.add_argument("--prompt", help="single custom prompt")
-    ap.add_argument("--checkpoint", default="model_compiled.pt",
-                    choices=["model_compiled.pt", "model_full.pt"])
+    ap.add_argument("--checkpoint", default="model_full.pt",
+                    choices=["model_full.pt", "model_compiled.pt", "model_mathonly.pt"])
     ap.add_argument("--max-new", type=int, default=60)
     ap.add_argument("--temperature", type=float, default=0.8)
     ap.add_argument("--greedy", action="store_true",

@@ -63,7 +63,9 @@ def val_nll(model, rows, device, bs=16):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--corpus", default=str(CORPUS))
-    ap.add_argument("--base-checkpoint", default="model_compiled.pt")
+    # model_full.pt, not model_compiled.pt: the Act 1e lineage is phase 1
+    # only -- there is no frozen-FFN phase-3 checkpoint to mid-train from yet.
+    ap.add_argument("--base-checkpoint", default="model_full.pt")
     ap.add_argument("--out", default="model_mathonly.pt")
     ap.add_argument("--tokens", type=int, default=15_000_000)
     ap.add_argument("--bs", type=int, default=16)

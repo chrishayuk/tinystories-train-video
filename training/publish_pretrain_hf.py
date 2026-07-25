@@ -229,6 +229,25 @@ def build_release(step_dir: Path, out_dir: Path, args, meta: dict,
 
     tokenizer_sha = stage_tokenizer(out_dir)
 
+    # The weights were produced by the code unit's VENDORED copy of
+    # tiny_model_v11/, but what ships here is the repo-root copy. Those are two
+    # files on disk with nothing keeping them equal, so if they ever diverge this
+    # repo would publish model code that does not match its own weights -- and
+    # the failure would surface as a shape error, or worse a silent behavioural
+    # difference, for whoever downloads it. Check rather than trust.
+    unit_code = UNIT / MODEL_CODE_DIR.name
+    drift = [name for name in MODEL_CODE_FILES
+             if (unit_code / name).is_file()
+             and sha256_file(unit_code / name) != sha256_file(MODEL_CODE_DIR / name)]
+    if drift:
+        sys.exit(
+            f"\nREFUSING TO PUBLISH -- the vendored model code that TRAINED these "
+            f"weights differs from the copy about to be published beside them.\n"
+            f"  differing files: {', '.join(drift)}\n"
+            f"  trained by: {unit_code.relative_to(REPO_ROOT)}\n"
+            f"  publishing: {MODEL_CODE_DIR.relative_to(REPO_ROOT)}\n"
+            f"Re-sync the two copies before publishing.\n")
+
     code_dir = out_dir / MODEL_CODE_DIR.name
     code_dir.mkdir()
     for name in MODEL_CODE_FILES:

@@ -24,7 +24,7 @@ CONFIG = HERE / "training" / "harness_pretrain" / "config.json"
 BOLD, DIM, RESET = "\033[1m", "\033[2m", "\033[0m"
 
 
-def main() -> None:
+def main(argv=None) -> None:
     cfg = json.loads(CONFIG.read_text())
     dim, layers_n = cfg["dim"], cfg["n_layers"]
     heads, kv_heads = cfg["n_heads"], cfg["n_kv_heads"]

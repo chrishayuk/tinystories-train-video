@@ -12,15 +12,17 @@ tokenizer/checkpoint config. All public.
 ## Layout
 
 ```
-repl.py                ★ interactive — type prompts live on camera
-cold_open.py           the same demos pre-canned, for rehearsal and reference
-show_params.py         where the 115.1M parameters go (Act 1a)
-show_data.py           what TinyStories actually looks like (Act 1c)
-run_broker.sh          ★ the closing shot — model calls a Z80 cell, narrates the answer
+repl.py                ★ THE on-camera tool — the whole live shoot happens in here
+demo_common.py         shared by repl.py + cold_open.py: tokenizer wrapper, vocab guard
+cold_open.py           the same demos non-interactively, for rehearsal and checking
+show_params.py         where the 115.1M parameters go (Act 1a) — also repl's /params
+show_data.py           what TinyStories actually looks like (Act 1c) — also repl's /data
+run_broker.sh          non-interactive broker smoke test (on camera it's repl's /broker)
 
 tiny_model_v11/        vendored model code (3 files, from tiny-model/model/v11-core)
 
-model_v11/               where the Act 1e checkpoint will land (empty — see below)
+model_v11/               generated — export_repl_checkpoint.py puts a loadable
+                         checkpoint here. Gitignored; not in a fresh clone.
 
 tokenizer/
   tokenizer.json              ★ the PUBLISHED v11 build — the only tokenizer here
@@ -73,6 +75,10 @@ pre-canned — every word on screen is produced live, which is the whole point f
 video.
 
 ```
+/config          the architecture — Act 1a
+/params          where the 115.1M parameters go — Act 1a
+/data [--tokens] TinyStories at the pinned revision — Act 1c
+/loop            the training loop itself, five lines highlighted — Act 1d
 /slow            ≈15 tok/s — readable on camera (default is ~75, too fast)
 /greedy          most likely token every time; no randomness to blame
 /sample /temp 0.8
@@ -80,8 +86,22 @@ video.
 /len 60          how many tokens to generate
 /full /compiled  switch checkpoint: after phase 1/2 vs after phase 3
 /mathonly        switch checkpoint: maths mid-trained, no cells (Act 3; once trained)
+/broker          let the model call Z80 cells — Act 4 (not built; needs 5c)
 /fast /help /quit
 ```
+
+**The whole live shoot runs in here** (SCRIPT.md § ONE REPL) rather than cutting
+out to `bat` and one-shot scripts — hence `/config`, `/params`, `/data`, `/loop`.
+The two exceptions are deliberate: Acts 1b and 2b use the published `v11` CLI,
+because those are *tokenizer* questions and the point of 2b is that a viewer can
+run the identical command. The rule is: **the `v11` CLI owns tokenizer questions,
+the REPL owns this model.**
+
+**No checkpoint is loaded until you generate.** Not just an optimisation — Acts
+1a–1d happen before the model exists in the video's own story, so a REPL that had
+to load trained weights to print the config would be quietly admitting the
+ending. `/config`, `/params`, `/data` and `/loop` work in a clone with no
+checkpoint in it.
 
 Ctrl-C stops a generation without leaving the REPL — useful when a story rambles.
 
@@ -175,11 +195,10 @@ so an ID that goes on camera is one a viewer can reproduce from PyPI.
 `v11_native.model` and `tokenizer_committed.json` have been deleted. One
 tokenizer, one vocabulary, one model lineage.
 
-The consequence is real and worth stating plainly: the **pre-existing**
-checkpoint was trained on the old SentencePiece build (vocab 71261) and cannot
-be driven by the published tokenizer — the ids mean different things. So
-`repl.py` and `cold_open.py` now refuse against it rather than generating
-fluent nonsense:
+The consequence was real: the **pre-existing** checkpoint was trained on the old
+SentencePiece build (vocab 71261) and cannot be driven by the published tokenizer
+— the ids mean different things. `repl.py` and `cold_open.py` refuse against it
+rather than generating fluent nonsense:
 
 ```
   checkpoint/tokenizer mismatch -- refusing to generate.
@@ -187,10 +206,15 @@ fluent nonsense:
     published v11 tokenizer: vocab 71,260
 ```
 
-**Every demo that generates text is therefore blocked on the Act 1e pretrain.**
-`show_data.py`, `show_params.py` and the `v11` CLI need no model and work today. See
-SCRIPT.md "What still needs running" items 1 and 5 for the sequencing — Act 4
-is the long pole, because its cell80-side checkpoints need rebuilding too.
+✅ **That is resolved — the replacement exists.** The 16M-token pretrain ran
+2026-07-25 on the published tokenizer and is published as
+`chrishayuk/v11-tinystories-115m-base`. Export it into place with
+`training/export_repl_checkpoint.py` and every generating demo works.
+
+Two things remain blocked, for unrelated reasons: `/compiled` (phase 3, the
+frozen-FFN retrain, has not been run on this lineage) and `/broker` plus
+`run_broker.sh` (Act 4's cell-call checkpoint needs rebuilding in cell80 — see
+SCRIPT.md item 5c, still the long pole).
 
 ## run_broker.sh — the closing shot
 
@@ -205,7 +229,13 @@ PROMPT: 157 sweets were shared fairly between 16 children.
 OUTPUT: <call> ⟨safe_div⟩ 157 16 </call> 9 sweets. The children smiled.
 ```
 
-⚠️ **Blocked.** Verified working 2026-07-23 against the *retired* checkpoint. Its cell80-side checkpoint was built on the old vocabulary and has to be rebuilt before this runs again — see SCRIPT.md item 5c.
+⚠️ **Blocked**, and this is now the long pole. Verified working 2026-07-23 against
+the *retired* checkpoint; its cell80-side checkpoint was built on the old
+vocabulary and has to be rebuilt before this runs again — see SCRIPT.md item 5c.
+
+On camera this is no longer a script at all: it's `repl.py`'s `/broker`, so the
+viewer watches the model emit the call live instead of reading a pre-baked
+`PROMPT:`/`OUTPUT:` block. This script stays as the non-interactive smoke test.
 
 Unlike the other scripts this one reaches into the cell80 repo, because that's
 where the mid-trained checkpoint and the Z80 executor live. It wraps two traps
@@ -228,20 +258,28 @@ that cost real time to rediscover, both documented in its comments:
 
 ## Still to run
 
-Status as of 2026-07-25: the maths-only midtrain (`training/build_mathonly_corpus.py`
-→ `train_mathonly.py` → `cliff_probe_mathonly.py`) is self-contained and
-smoke-tested, no cell80 dependency — `train_mathonly.py` loads
-`model_v11/artifacts/model_compiled.pt` and saves straight to
-`model_mathonly.pt` (no vocab resize needed, this corpus never mentions a
-cell). `repl.py`'s `/mathonly` command already loads the result directly. None
-of the real training runs — Act 1e's pretrain or Act 3's midtrain — have been
-fired yet.
+Status as of 2026-07-25.
 
-**The pretrain no longer waits on the catalog key.** `training/colab_pretrain_cell.py`
-runs it on a Colab T4 from the pinned HF revision and publishes the result to
-`chrishayuk/v11-tinystories-115m-base` — see "The Colab route" above. That
-unblocks Acts 1f, 2a and 3, which need a checkpoint driven by the published
-tokenizer and nothing more. Act 4 stays blocked on cell80-side rebuilding.
+✅ **The Act 1e pretrain has run.** 16M tokens on the published tokenizer, locally
+on MPS (~2h, the documented recipe unchanged: batch 4 × 256, lr 3e-4, seed 42),
+published as `chrishayuk/v11-tinystories-115m-base`. That unblocks Acts 1f, 2a
+and 3, which needed nothing but a checkpoint the published tokenizer can drive.
+It also takes the chuk-datasets key off the critical path: nothing dispatches, so
+nothing needs catalog auth.
+
+Still to run:
+
+1. **Act 3's maths-only midtrain** — `build_mathonly_corpus.py` →
+   `train_mathonly.py` → `cliff_probe_mathonly.py`, self-contained and
+   smoke-tested, ~2.5–3h. Now unblocked — its `--base-checkpoint` default moved to
+   `model_full.pt`, since this lineage has no phase-3 checkpoint to start from.
+2. **Phase 3** (frozen-FFN attention retrain, 8M tokens) — not strictly required,
+   but Act 1f's `/full` vs `/compiled` beat needs it and Act 4c calls back to it.
+3. **Act 4's cell-call midtrain**, in cell80 — the long pole, unscoped. `/broker`
+   and `run_broker.sh` stay blocked until it lands.
+4. **A screen-captured re-run of the pretrain.** The 2026-07-25 run was not
+   recorded, and Act 1e needs the footage. `seed 42` plus the pinned revision make
+   it reproduce exactly. See SCRIPT.md § PRE-RECORD.
 
 `training/harness_pretrain/` is a from-scratch pretrain unit adapted to the
 [chuk-train](https://github.com/chrishayuk/gpu-training-harness) script
