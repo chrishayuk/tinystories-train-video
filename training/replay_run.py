@@ -49,7 +49,12 @@ import sys
 import time
 from pathlib import Path
 
-STEP_RE = re.compile(r"^\[v11-pretrain\] step (\d+)/(\d+) .*?([\d.]+) tok/s\s*$")
+# Two trainers, two line formats. harness_pretrain reports a cumulative rate, so
+# elapsed has to be derived from it; train_mathonly prints elapsed seconds directly,
+# which is better. Either is enough to reconstruct timing when train_replay.jsonl is
+# missing -- which is the only case reconstruction is for.
+PRETRAIN_RE = re.compile(r"^\[v11-pretrain\] step (\d+)/(\d+) .*?([\d.]+) tok/s\s*$")
+MATHONLY_RE = re.compile(r"^\s+step\s+(\d+) \([\d.]+M tok\)\s+loss [\d.]+\s+\((\d+)s\)\s*$")
 DIM, GREEN, BOLD, RESET = "\033[2m", "\033[92m", "\033[1m", "\033[0m"
 
 
@@ -79,13 +84,14 @@ def load_reconstructed(log: Path, tokens_per_step: int) -> list[tuple[float, str
     lines = log.read_text().splitlines()
     anchors: dict[int, float] = {0: 0.0}
     for i, line in enumerate(lines):
-        m = STEP_RE.match(line)
-        if m:
+        if m := MATHONLY_RE.match(line):
+            anchors[i] = float(m.group(2))          # elapsed seconds, stated outright
+        elif m := PRETRAIN_RE.match(line):
             step, rate = int(m.group(1)), float(m.group(3))
             if rate > 0:
                 anchors[i] = step * tokens_per_step / rate
     if len(anchors) < 2:
-        sys.exit(f"{log}: no 'step N/M ... tok/s' lines to recover timing from")
+        sys.exit(f"{log}: no recognisable step lines to recover timing from")
     anchors[len(lines) - 1] = max(anchors.values())
 
     idx = sorted(anchors)
@@ -156,7 +162,8 @@ def main() -> None:
         else:
             # The two things a viewer is meant to track: the loss falling, and a
             # milestone landing. Everything else is texture.
-            hot = "checkpoint step_" in line or line.startswith("  '")
+            hot = ("checkpoint step_" in line or "[samples]" in line
+                   or "[replay check]" in line or line.lstrip().startswith("'"))
             print(f"{GREEN if hot else ''}{line}{RESET}" if hot else line, flush=True)
 
 

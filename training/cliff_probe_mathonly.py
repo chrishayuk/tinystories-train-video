@@ -51,6 +51,11 @@ def safe_mod(a, b):
 
 # op -> ([B0/B1/B2 arg generators], template, ground-truth fn)
 BANDS = {
+    # B0 is the taught fact table; B1 is JUST outside it at the same magnitude;
+    # B2 is a decimal digit beyond. B1 is the one that matters -- 7+5 against 47+55
+    # is a far sharper test of "memorised a table" than 7+5 against 447+551, because
+    # nothing about 47+55 is conceptually harder. Keep these in step with
+    # build_mathonly_corpus.py's TIER_MAX.
     "add": ([lambda r: (r.randint(0, 99), r.randint(0, 99)),
              lambda r: (r.randint(100, 999), r.randint(100, 999)),
              lambda r: (r.randint(1000, 9999), r.randint(1000, 9999))],
