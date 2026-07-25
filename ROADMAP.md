@@ -158,10 +158,21 @@ and `11` for both `7+5` and `3+4` is the answer marginal, not magnitude.
 
 ## Known-bad numbers in SCRIPT.md
 
-- **Act 3's replay baseline of 1.6079 is MPS.** Colab reports **1.4904** for the same
-  checkpoint and code. Most of that gap was different validation data (the corpus
-  divergence, now fixed), but until it is re-measured on one device with one corpus,
-  **do not quote a cross-device replay delta.**
+- ~~**Act 3's replay baseline of 1.6079 is MPS**, against Colab's 1.4904.~~
+  **Settled 2026-07-25, and the answer is that the gap was never the device.**
+  With the corpus fixed, both machines report a pre-midtrain TinyStories val NLL
+  of **1.5893** on a 710-row validation set derived from a 96,894-row corpus —
+  the same figure to four decimals on MPS and on a T4. The old 1.6079/1.4904
+  spread was *entirely* the corpus divergence (663 rows vs 710); device
+  arithmetic contributed nothing measurable.
+
+  So a cross-device delta is quotable now, provided both sides share a corpus
+  build. The harness's standing rule — keep a replicate set on one device —
+  still holds for a different reason: it is about seed variance, not this.
+
+- **Seed 80's own replay delta: val NLL 1.5893 → 1.7182** over 12M tokens. The
+  midtrain costs story-modelling loss; that is the forgetting number Act 3 has
+  to be honest about, and it is measured on one device with one corpus.
 - Every 🔶 in Act 3 is still CN-7's mixed run.
 - The `call grammar 6.11 → 0.0002` line is deleted and cannot return: this arm is
   cell-free by construction, so it has no call grammar to measure.
