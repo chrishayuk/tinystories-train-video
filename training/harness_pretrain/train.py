@@ -30,7 +30,7 @@ Tokenizer: the PUBLISHED v11 build (2026-07-24) -- crates.io `v11-core`, PyPI
 (sha256 10dd5110..., verified against the Hub, vocab 71260, `byte_fallback`).
 
 NOT the native SentencePiece `v11_native.model` (sha256 4ffbfc87..., vocab
-71261) that repl.py/cold_open.py use for the EXISTING checkpoint -- that is a
+71261) that the RETIRED checkpoint was built on -- that is a
 different id mapping and a different vocab size. Since this is a fresh pretrain
 with no existing checkpoint to stay compatible with, it uses the published
 build, which is also the only one of the two that is byte-safe (the native

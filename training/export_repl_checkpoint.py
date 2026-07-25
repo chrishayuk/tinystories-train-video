@@ -8,7 +8,7 @@
     export_repl_checkpoint.py --ckpt-dir run_pretrain/ckpt --out model_full.pt
 
 train.py writes `<ckpt>/step_<n>/model.safetensors` + `meta.json`. repl.py,
-cold_open.py and train_mathonly.py all load through
+and train_mathonly.py both load through
 `tiny_model_v11.load_from_artifacts(model_v11/, "<name>.pt")`, which wants a
 **torch `.pt`** under `model_v11/artifacts/` plus a `model_v11/config.json`.
 Different path, different format -- so without this step every demo that

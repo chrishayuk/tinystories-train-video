@@ -13,8 +13,7 @@ tokenizer/checkpoint config. All public.
 
 ```
 repl.py                ★ THE on-camera tool — the whole live shoot happens in here
-demo_common.py         shared by repl.py + cold_open.py: tokenizer wrapper, vocab guard
-cold_open.py           the same demos non-interactively, for rehearsal and checking
+demo_common.py         shared by repl.py + show_data.py: tokenizer wrapper, vocab guard
 show_params.py         where the 115.1M parameters go (Act 1a) — also repl's /params
 show_data.py           what TinyStories actually looks like (Act 1c) — also repl's /data
 run_broker.sh          non-interactive broker smoke test (on camera it's repl's /broker)
@@ -30,7 +29,6 @@ tokenizer/
 unit.toml                the chuk-train code-unit manifest (must live at repo root)
 configs/
   real.json                   ★ Act 1e — the GPU run, pinned to the pre-tokenized stream
-  real_raw.json               same run from raw text, tokenizing on the worker
   colab.json                  ★ the same 16M-token run with NO data: block — HF-streamed,
                                 needs no catalog key and no control plane
   smoke.json                  20k tokens, no infra — HF streaming fallback
@@ -58,9 +56,10 @@ Every script declares its own dependencies inline (PEP 723), so each is just:
 
 ```bash
 uv run repl.py
-uv run cold_open.py --slots
 uv run show_params.py
 uv run show_data.py --tokens
+uv run training/export_repl_checkpoint.py     # after a training run
+uv run training/replay_run.py run_pretrain    # film a finished run
 ```
 
 No install step, no venv, no `--with` flags, and **no warnings on screen** —
@@ -109,8 +108,9 @@ Ctrl-C stops a generation without leaving the REPL — useful when a story rambl
 stream. Then `/greedy` and type *Lily had three apples. Tom gave her four more.
 Now Lily has*. Then `/next` on the four number slots below.
 
-`cold_open.py` runs the same three demos non-interactively (`--story`, `--maths`,
-`--slots`) — handy for rehearsing and for checking output before filming.
+`/slots` prints all four number slots at once with the summary line — that's the
+tool for re-measuring Act 2a after a retrain. `/next` one at a time is the
+on-camera version.
 
 ### What `--slots` shows, and why it matters
 
@@ -203,8 +203,8 @@ tokenizer, one vocabulary, one model lineage.
 
 The consequence was real: the **pre-existing** checkpoint was trained on the old
 SentencePiece build (vocab 71261) and cannot be driven by the published tokenizer
-— the ids mean different things. `repl.py` and `cold_open.py` refuse against it
-rather than generating fluent nonsense:
+— the ids mean different things. `repl.py` refuses against it rather than
+generating fluent nonsense:
 
 ```
   checkpoint/tokenizer mismatch -- refusing to generate.
@@ -292,61 +292,90 @@ Still to run:
 contract, for running the pretrain on a GPU worker (Colab/rented) instead of
 this Mac, with a live metrics dashboard. **This is Act 1e** — see below.
 
-## Act 1e: the pretrain on real hardware
+## Act 1e: how the base model was actually trained
 
-Three moving parts, all live:
-
-| Part | Where |
-|---|---|
-| Tokenizer | published v11 (`10dd5110…`), vendored in the code unit |
-| Data | `chuk-datasets.fly.dev` — `tiny-model/v11-rust-tokenized-phase1 @ 67603f8e…` |
-| Compute | `chuk-mcp-training.fly.dev` — `submit_run`, then the dashboard |
-
-```console
-# code = this repo, entrypoint = train, config = configs/real.json
-# configs/real_raw.json is the same run from raw text instead of the
-# pre-tokenized stream (tokenizes on the worker; slower, not bit-reproducible)
-```
-
-Run it locally with no infrastructure at all — it falls back to streaming
-TinyStories from HuggingFace at the pinned revision:
+**On this Mac, locally, in ~2 hours** — `configs/colab.json`, which carries **no
+`data:` block**, so `train.py` streams TinyStories from the pinned HF revision and
+touches no infrastructure at all:
 
 ```bash
-uv run training/harness_pretrain/train.py configs/smoke.json
+caffeinate -i env CHUK_CONFIG=$PWD/configs/colab.json \
+  CHUK_METRICS=$PWD/run_pretrain/metrics.jsonl \
+  CHUK_CKPT_DIR=$PWD/run_pretrain/ckpt \
+  uv run training/harness_pretrain/train.py
 ```
 
-### The Colab route — one cell, no infrastructure, publishes to the Hub
-
-`training/colab_pretrain_cell.py` pastes into a single Colab cell on a T4 and does
-the whole thing: clone, pretrain 16M tokens, publish the result to
-`chrishayuk/v11-tinystories-115m-base`. ~45–75 min.
-
-It uses `configs/colab.json`, which carries **no `data:` block**, so `train.py`
-streams TinyStories straight from the pinned HF revision. That deliberately
-sidesteps the blocked chuk-datasets key — this route needs no catalog key, no
-control plane and no join token. What it gives up is stated in the config: the
-tokenizer runs on the worker, and token *order* comes from the seed rather than a
-content-addressed artifact, so the run is reproducible-given-the-seed but not
-bit-reproducible the way `configs/real.json` is. Two of the four refusals also
-cannot fire without staged shards — the tokenizer-sha and vocab-size guards still
-do, and corpus identity rests on the HF revision pin instead.
-
-Rehearse with `CONFIG = "configs/smoke.json"` and `PUBLISH = False` first: same
-code path, 19 steps, ~2 minutes.
-
-`training/publish_pretrain_hf.py` is the publish half, usable on its own against
-any checkpoint dir `train.py` wrote. It refuses to publish a checkpoint whose
-`meta.json` `tokenizer_hash` disagrees with the tokenizer being shipped beside it,
-an embedding table that disagrees with the vocabulary, a step dir with no `.ready`
-marker, or different weights under an already-published repo id (without
-`--force`). Then it downloads what the Hub actually serves, builds `TinyModel`
-from the shipped code, loads the weights and **generates** — because a shape check
-passes happily through a model that emits garbage.
+Loss **11.07 → 1.70**, 15,625 steps, 120 min at 2,218 tok/s, seed 42. Then:
 
 ```bash
-uv run training/publish_pretrain_hf.py --ckpt-dir out/ckpt \
+uv run training/export_repl_checkpoint.py     # -> model_v11/, what repl.py loads
+uv run training/publish_pretrain_hf.py --ckpt-dir run_pretrain/ckpt \
     --repo-id chrishayuk/v11-tinystories-115m-base --dry-run
 ```
+
+**Rerunning that training command replays instead of retraining.** `train.py` spots
+a completed local log at the same step count and stops, pointing at
+`replay_run.py` — so the same command serves both training and filming.
+`CHUK_FORCE_RETRAIN=1` trains anyway. Never fires on a worker (that check keys off
+`CHUK_RUN_ID`, which only the control plane sets).
+
+What the local route gives up, stated in the config rather than glossed: the
+tokenizer runs at train time, and token *order* comes from the seed rather than a
+content-addressed artifact — reproducible given the seed, but not bit-reproducible
+the way `configs/real.json` is. Two of `train.py`'s four refusals also cannot fire
+without staged shards; the tokenizer-sha and vocab-size guards still do, and corpus
+identity rests on the HF revision pin.
+
+Rehearse anything with `configs/smoke.json` first: 19 steps, ~2 minutes, same code
+path and same data source.
+
+### Filming it: replay, don't re-run
+
+```bash
+uv run training/replay_run.py run_pretrain --speed 60 --max-gap 2
+```
+
+Nobody films two hours. Replay plays a *finished* run's output back at a speed that
+reads, and it is the **more** faithful option rather than a compromise: `seed 42`
+plus a pinned corpus make the trajectory reproducible, so a re-run would produce a
+*second* run whose checkpoints get discarded. Replay shows the run that actually
+produced the published weights, with `train.log`, `metrics.jsonl` and
+`ckpt/step_*/meta.json` all on disk to check against. It is not live, and must not
+be narrated as if it were.
+
+`--max-gap` is the setting that matters: the HF stream stalls 30–60s while its
+shuffle buffer refills, and at 60× that is still a freeze that reads as a crash.
+Runs from 2026-07-25 on get exact timing from `train_replay.jsonl`; earlier ones are
+reconstructed from the step lines' cumulative tok/s.
+
+### The other two routes, both still working
+
+**Colab T4** — `training/colab_pretrain_cell.py` pastes into one cell and does the
+whole thing including the Hub push, in ~45–75 min. Roughly half the wall clock of
+the Mac. Not used for the video, because a browser tab and Colab's UI in frame
+break the one-terminal look every other shot has — but it's the route to use if the
+Mac isn't free, and it needs no catalog key either.
+
+**Dispatch to the fleet** — `configs/real.json` via `submit_run`, against
+`chuk-datasets` (`tiny-model/v11-rust-tokenized-phase1 @ 67603f8e…`) and
+`chuk-mcp-training.fly.dev`, with a live dashboard. The only bit-reproducible route,
+since the token stream is a pinned content-addressed artifact and no tokenizer runs
+at train time. **Currently blocked**: the catalog key on the control plane returns
+401, and rented GPUs aren't available (`provider_offers` reports only `mock`
+configured). Not on the critical path any more, since nothing in the video
+dispatches.
+
+### Publishing
+
+`training/publish_pretrain_hf.py` works against any checkpoint dir `train.py` wrote.
+Five refusals: a `meta.json` `tokenizer_hash` that disagrees with the tokenizer
+shipped beside it, an embedding table that disagrees with the vocabulary, a step dir
+with no `.ready`, vendored model code that differs from the copy being published,
+and different weights under an already-published repo id (without `--force`).
+
+Then it downloads what the Hub actually serves, builds `TinyModel` from the shipped
+code, loads the weights and **generates** — because a shape check passes happily
+through a model that emits garbage.
 
 ### It refuses rather than trains on nonsense
 
@@ -378,13 +407,12 @@ stream: guard passed, 29 steps, three milestone checkpoints with real
 `model.safetensors` + `meta.json` + `.ready`, samples generated, metrics
 streamed, loss 10.9 → 8.0. All four refusal paths verified.
 
-The **HF-streaming** path (`configs/colab.json`'s route) is separately verified on
-MPS: 19 steps, first logged loss **11.17** — which is `ln(71260)` to two decimals,
-the number Act 1d promises — down to 9.69, three milestone checkpoints written,
-and `publish_pretrain_hf.py` staged a complete repo from that real output with the
-tokenizer join checked. All four of its refusals were tested too.
+✅ **The real 16M-token run has since been done, on the HF-streaming path** — loss
+**11.07 → 1.70** over 15,625 steps, published as
+`chrishayuk/v11-tinystories-115m-base`. The first logged loss, 11.07, is `ln(71260)`
+to two decimals: the number Act 1d promises, measured rather than asserted.
 
-**Neither 16M-token run has been fired yet.** The catalog-backed dispatch
-(`configs/real.json`) still needs a read-scoped chuk-datasets key, since only
-`/v1/datasets` is open without auth. The Colab route does not, and is the way to
-get the base model built and published today.
+The catalog-backed dispatch (`configs/real.json`) remains unrun — it still needs a
+read-scoped chuk-datasets key, since only `/v1/datasets` is open without auth. That
+is now a gap in the harness rather than a blocker for the video, which dispatches
+nothing.

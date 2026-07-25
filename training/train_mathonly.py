@@ -5,7 +5,7 @@
 # ///
 """Self-contained maths-only (no cells) midtrain for Act 3 -- no cell80 dependency.
 
-Loads model_v11/artifacts/model_compiled.pt (the same base repl.py/cold_open.py
+Loads model_v11/artifacts/model_full.pt (the same base repl.py
 use), continues training on training/data/mathonly_corpus.jsonl (built by
 build_mathonly_corpus.py), and saves model_v11/artifacts/model_mathonly.pt --
 which repl.py's /mathonly command already knows how to load.
