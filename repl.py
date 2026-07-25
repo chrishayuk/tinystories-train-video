@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # /// script
 # requires-python = ">=3.11"
-# dependencies = ["torch>=2.2", "sentencepiece>=0.2", "numpy"]
+# dependencies = ["torch>=2.2", "tokenizers>=0.20", "numpy"]
 # ///
 """Interactive REPL for TinyModel v11 — for typing prompts live on camera.
 
@@ -25,8 +25,8 @@ Commands (type these instead of a prompt):
 
 Ctrl-C stops a generation without leaving the REPL.
 
-Uses the NATIVE SentencePiece model — the mapping this checkpoint was actually
-trained with. See demo_tokenizer.py --section 5 for why that matters.
+Uses the PUBLISHED v11 tokenizer (vocab 71260) and refuses to run against any
+checkpoint built on a different vocabulary.
 """
 
 import sys
@@ -38,13 +38,81 @@ import torch
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
-TOKENIZER = HERE / "tokenizer" / "v11_native.model"
+TOKENIZER = HERE / "tokenizer" / "tokenizer.json"
 ARTEFACTS = HERE / "model_v11"
 
 DIM, GREEN, BOLD, RESET = "\033[2m", "\033[92m", "\033[1m", "\033[0m"
 
 NUMBER_WORDS = {"zero", "one", "two", "three", "four", "five", "six", "seven",
                 "eight", "nine", "ten", "eleven", "twelve"}
+
+
+def no_model_yet(path):
+    sys.exit(
+        f"\n  no checkpoint at {path}\n\n"
+        f"  The pre-existing 71261-vocab model has been retired -- every demo\n"
+        f"  that generates text now runs on the Act 1e model, which has not been\n"
+        f"  trained yet. See SCRIPT.md, \"What still needs running\" item 1.\n\n"
+        f"  demo_tokenizer.py and show_data.py need no checkpoint and work today.\n")
+
+class V11Tokenizer:
+    """The published v11 build (pip install v11-tokenizer / HF
+    chrishayuk/v11-tokenizer), wrapped in the small SentencePiece-shaped
+    interface the rest of this file uses. Verified by hash on load, so what
+    goes on camera is provably the published artifact."""
+
+    SHA256 = "10dd51100331ab503115db23eee7e8dc3e360e3aed697c8a2e1b12b8f46031ae"
+
+    def __init__(self, path):
+        import hashlib
+        from tokenizers import Tokenizer
+        if not path.exists():
+            sys.exit(f"missing tokenizer: {path}")
+        actual = hashlib.sha256(path.read_bytes()).hexdigest()
+        if actual != self.SHA256:
+            sys.exit(f"{path} is not the published v11 build\n"
+                     f"  expected {self.SHA256}\n  found    {actual}\n"
+                     f"  re-fetch: huggingface.co/chrishayuk/v11-tokenizer")
+        self.t = Tokenizer.from_file(str(path))
+        self._inv = {i: p for p, i in self.t.get_vocab().items()}
+
+    def encode(self, text):
+        return self.t.encode(text).ids
+
+    def decode(self, ids):
+        return self.t.decode(ids)
+
+    def id_to_piece(self, i):
+        return self._inv.get(i, "?")
+
+    def _special(self, tok):
+        i = self.t.token_to_id(tok)
+        return -1 if i is None else i
+
+    def bos_id(self):
+        return self._special("<s>")
+
+    def eos_id(self):
+        return self._special("</s>")
+
+    def get_piece_size(self):
+        return self.t.get_vocab_size()
+
+
+def check_vocab(config, tok, checkpoint):
+    """The published tokenizer has 71260 pieces. A checkpoint built against
+    any other vocabulary cannot be driven by it -- the ids would mean
+    different things and generation is fluent nonsense at perplexity ~1e7.
+    Refuse instead, and say what to do about it."""
+    if config.vocab_size != tok.get_piece_size():
+        sys.exit(
+            f"\n  checkpoint/tokenizer mismatch -- refusing to generate.\n"
+            f"    {checkpoint}: vocab {config.vocab_size:,}\n"
+            f"    published v11 tokenizer: vocab {tok.get_piece_size():,}\n\n"
+            f"  This checkpoint predates the published tokenizer and is retired.\n"
+            f"  Every demo now runs on the Act 1e model -- see SCRIPT.md,\n"
+            f'  "What still needs running" items 1 and 5.\n')
+
 
 try:
     import readline  # noqa: F401  — arrow keys and history in input()
@@ -65,27 +133,23 @@ class Session:
         self.config = None
 
     def load(self, checkpoint=None):
-        import sentencepiece as spm
         from tiny_model_v11 import load_from_artifacts
 
         if checkpoint:
             self.checkpoint = checkpoint
         if self.sp is None:
-            if not TOKENIZER.exists():
-                sys.exit(f"missing tokenizer: {TOKENIZER}")
-            self.sp = spm.SentencePieceProcessor()
-            self.sp.load(str(TOKENIZER))
+            self.sp = V11Tokenizer(TOKENIZER)
 
         path = ARTEFACTS / "artifacts" / self.checkpoint
         if not path.exists():
-            print(f"  {DIM}no such checkpoint: {path}{RESET}")
-            return False
+            no_model_yet(path)
 
         print(f"{DIM}loading {self.checkpoint} …{RESET}", end=" ", flush=True)
         t0 = time.time()
         self.model, self.config = load_from_artifacts(
             ARTEFACTS, checkpoint=self.checkpoint)
         print(f"{DIM}{time.time()-t0:.1f}s{RESET}")
+        check_vocab(self.config, self.sp, self.checkpoint)
         return True
 
     @property

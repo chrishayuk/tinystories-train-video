@@ -18,7 +18,7 @@ entirely, not just disabled by a flag):
             (TinyStories register). Tiers match CN-7's: add/sub operands <=99,
             mul times-tables <=12x12, mod dividend<=99/divisor<=12.
   replay  : TinyStories (pinned revision f54c09f, same as show_data.py /
-            train_v11_replication.py), full loss, sized to hit --replay-frac
+            the pretrain), full loss, sized to hit --replay-frac
             of the mix.
 
 Writes training/data/mathonly_corpus.jsonl -- rows of {"text", "ids"}, always

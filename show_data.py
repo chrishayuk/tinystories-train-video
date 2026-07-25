@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # /// script
 # requires-python = ">=3.11"
-# dependencies = ["datasets>=2.18", "sentencepiece>=0.2"]
+# dependencies = ["datasets>=2.18", "tokenizers>=0.20"]
 # ///
 """Act 1c — what the model is actually trained on.
 
@@ -21,9 +21,9 @@ import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-TOKENIZER = HERE / "tokenizer" / "v11_native.model"
+TOKENIZER = HERE / "tokenizer" / "tokenizer.json"   # the published v11 build
 
-# the pinned revision from train_v11_replication.py — same documents, every run
+# the pinned revision used throughout — same documents, every run
 HUB_SHA = "f54c09fd23315a6f9c86f9dc80f725de7d8f9c64"
 TOKENS_PHASE1 = 16_000_000
 
@@ -65,19 +65,19 @@ def main():
     if not args.tokens:
         return
 
-    import sentencepiece as spm
+    from tokenizers import Tokenizer
     if not TOKENIZER.exists():
         sys.exit(f"missing tokenizer: {TOKENIZER}")
-    sp = spm.SentencePieceProcessor()
-    sp.load(str(TOKENIZER))
+    tok = Tokenizer.from_file(str(TOKENIZER))
+    inv = {i: p for p, i in tok.get_vocab().items()}
 
     text = stories[0]
-    ids = sp.encode(text)
+    ids = tok.encode(text).ids
 
     print(f"{BOLD}  And here is that first story as the model sees it{RESET}\n")
     head = text[:110].replace("\n", " ")
     print(f"  {DIM}text  {RESET}{head}…\n")
-    print(f"  {DIM}pieces{RESET} {[sp.id_to_piece(i) for i in ids[:18]]}…\n")
+    print(f"  {DIM}pieces{RESET} {[inv[i] for i in ids[:18]]}…\n")
     print(f"  {DIM}ids   {RESET}{ids[:18]}…\n")
 
     n = len(ids)

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # /// script
 # requires-python = ">=3.11"
-# dependencies = ["torch>=2.2", "tokenizers>=0.20", "safetensors>=0.4", "datasets>=2.18", "pyarrow>=14"]
+# dependencies = ["torch>=2.2", "tokenizers>=0.20", "safetensors>=0.4", "datasets>=2.18", "pyarrow>=14", "numpy"]
 # ///
 """v11 Phase-1 pretrain. Runs two ways:
 
@@ -13,24 +13,38 @@
 
 Self-contained: vendors tiny_model_v11/ + tokenizer_v11/tokenizer.json so this
 code unit carries everything it needs except the TinyStories text itself and
-torch (present already on Colab; PEP 723 above resolves it standalone). Text
-source is picked automatically at run time -- direct from HuggingFace (pinned
-revision, zero setup) if no `data:` block staged anything, or the locally
-staged Arrow shards chuk-datasets-server resolved if one did -- so either a
-bare `uv run train.py` or a chuk-train dispatch with `data:` set just works,
-without the script caring which.
+torch (present already on Colab; PEP 723 above resolves it standalone). Three
+text sources, picked automatically at run time and never guessed at silently:
 
-Tokenizer: v-tokenizers' canonical v11 build (v11/artifacts/tokenizer.json,
-loaded via the `tokenizers` library) -- NOT the native SentencePiece
-`v11_native.model` tinystories-train-video's repl.py/cold_open.py use for the
-existing checkpoint. That native path has a real, measured bug (SentencePiece's
-mandatory metaspace step silently collapses literal multi-space runs on
-decode); this build doesn't. Since this is a fresh pretrain with no existing
-checkpoint to stay compatible with, there's no reason to inherit the bug.
-`tokenizer_hash` in each checkpoint's meta.json is a real sha256 of the vendored
-file (not a label), so a downstream consumer loading the wrong tokenizer against
-this checkpoint fails loudly instead of the silent ~1e7-perplexity mismatch
-Act 2c is about.
+  * no `data:` block          -> stream from HuggingFace, pinned revision.
+                                 Zero setup: what a viewer following along gets.
+  * `data:` -> Arrow shards   -> `tiny-model/tinystories-raw`: the pinned raw
+                                 text, tokenized here on the worker.
+  * `data:` -> u32 stream     -> `tiny-model/v11-rust-tokenized-phase1`: already
+                                 tokenized, content-addressed. No tokenizer runs
+                                 at train time at all.
+
+Tokenizer: the PUBLISHED v11 build (2026-07-24) -- crates.io `v11-core`, PyPI
+`v11-tokenizer`, HF `chrishayuk/v11-tokenizer`. The vendored
+`tokenizer_v11/tokenizer.json` is byte-identical to the published artifact
+(sha256 10dd5110..., verified against the Hub, vocab 71260, `byte_fallback`).
+
+NOT the native SentencePiece `v11_native.model` (sha256 4ffbfc87..., vocab
+71261) that repl.py/cold_open.py use for the EXISTING checkpoint -- that is a
+different id mapping and a different vocab size. Since this is a fresh pretrain
+with no existing checkpoint to stay compatible with, it uses the published
+build, which is also the only one of the two that is byte-safe (the native
+path's mandatory metaspace step silently collapses literal multi-space runs on
+decode).
+
+That mismatch is guarded rather than trusted, because it fails *silently*: a
+token stream is a flat array of integers carrying no in-band record of which
+tokenizer produced it, and the catalog holds both tokenizations of TinyStories
+one `curl` apart. See `check_data_identity()`: the run refuses to start unless
+the staged bytes are the ones the config pinned AND decode back to plausible
+English. `tokenizer_hash` in each checkpoint's meta.json is a real sha256 of the
+vendored file (not a label), so a downstream consumer loading the wrong
+tokenizer against this checkpoint fails loudly too.
 
 Same recipe as ~/chris-source/tiny-model/model/v11-train/train_v11_replication.py's
 Phase 1 (16M tokens, seed 42) and tinystories-train-video/training/capture_emergence.py's
@@ -60,6 +74,55 @@ sys.path.insert(0, str(HERE))
 HUB_SHA = "f54c09fd23315a6f9c86f9dc80f725de7d8f9c64"  # pinned, matches show_data.py
 READY_MARKER = ".ready"
 TOKENIZER_PATH = HERE / "tokenizer_v11" / "tokenizer.json"
+
+# The published v11 tokenizer (2026-07-24): crates.io v11-core 0.1.0, PyPI
+# v11-tokenizer 0.1.0, HF chrishayuk/v11-tokenizer. This is the sha256 of the
+# Hub's tokenizer.json, verified byte-identical to the vendored copy -- so
+# "the tokenizer in this code unit is the published one" is a checked fact,
+# not a claim in a comment.
+PUBLISHED_TOKENIZER_SHA256 = "10dd51100331ab503115db23eee7e8dc3e360e3aed697c8a2e1b12b8f46031ae"
+
+# TinyStories in the chuk-datasets catalog (chuk-datasets.fly.dev). A staged
+# pretrain stream is a flat array of u32 token ids and carries NO in-band
+# record of which tokenizer produced it -- feed the wrong one in and training
+# runs perfectly happily on nonsense. Both tokenized streams live under
+# `class: pretrain-stream`, one `curl` apart. Hence check_data_identity().
+CATALOG_STREAMS = {
+    "67603f8ef3e67bd36676d8ad88b96f604c6d7f38ed15b7ea0910d32c93440f38": (
+        "tiny-model/v11-rust-tokenized-phase1 -- tokenized with v11.vocab.bin "
+        "(873f44de...), the published v11 build. CORRECT for this unit."
+    ),
+    "5b9d6a70601a7adaa38b594f9dba3178fc4ec4111beaf9ac5e862b01b439f7a3": (
+        "tiny-model/v11-pretrain-phase1 -- tokenized with the legacy SentencePiece "
+        "v11.model (4ffbfc87..., vocab 71261), the mapping the ORIGINAL v11 "
+        "checkpoint was trained with. A DIFFERENT id space: WRONG for this unit."
+    ),
+    "41006c5696ab503e9cf99632dd497a5d414219db5fda54343205f73824e113ce": (
+        "tiny-model/tinystories-raw -- raw Arrow text, pinned HF revision. "
+        "Correct, and tokenized here at train time."
+    ),
+}
+
+# Arrow IPC magic. HF `datasets`' on-disk cache is the *streaming* variant
+# (leading continuation marker, no footer); `pa.ipc.open_file` rejects it.
+ARROW_FILE_MAGIC = b"ARROW1"
+ARROW_STREAM_MAGIC = b"\xff\xff\xff\xff"
+
+# Whether a decoded sample reads like English. Measured on real TinyStories
+# vs. the same text pushed through six wrong mappings (shifts of 1/7/137/1000/
+# 20000, uniform-random ids, reversed ids):
+#
+#                       space ratio   avg word length
+#   correct                  0.208            3.8
+#   every wrong mapping   0.035-0.085     10.7-27.0
+#
+# A wrong mapping mostly yields word-piece salad with the spacing gone, so
+# both signals separate by 2-3x. An earlier version of this check counted
+# "plausible prose characters" instead and separated by 3% -- which would
+# have passed a wrong mapping on a slightly different corpus. Thresholds sit
+# between the two clusters, not next to either.
+MIN_SPACE_RATIO = 0.12
+MAX_AVG_WORD_LEN = 8.0
 
 
 def sha256_file(path: Path) -> str:
@@ -127,21 +190,108 @@ def _hf_stream_texts(seed):
         yield sample["text"]
 
 
+def staged_shards() -> list[Path]:
+    """Every shard chuk-train staged at ./data/<sha256> (spec sections 6/7.3
+    dispatch-time `data:` resolution), fetched and sha-verified once by the
+    control plane rather than each worker separately streaming from
+    HuggingFace. No network at train time. Sorted for determinism."""
+    return sorted(p for p in Path("data").iterdir() if p.is_file())
+
+
+def shard_format(path: Path) -> str:
+    """`arrow-text` or `u32-stream`, sniffed from the leading bytes. The
+    catalog serves both under the same content-addressed filename, so the
+    name tells you nothing -- the bytes have to."""
+    head = path.open("rb").read(8)
+    if head.startswith(ARROW_FILE_MAGIC) or head.startswith(ARROW_STREAM_MAGIC):
+        return "arrow-text"
+    return "u32-stream"
+
+
+def english_stats(text: str) -> tuple[float, float]:
+    """(space ratio, average word length) -- the cheap, tokenizer-agnostic
+    tell that a decode went through the right mapping. See the threshold
+    constants for the measured separation."""
+    if not text:
+        return 0.0, 0.0
+    words = text.split()
+    avg_len = sum(len(w) for w in words) / len(words) if words else 0.0
+    return sum(c.isspace() for c in text) / len(text), avg_len
+
+
+def check_data_identity(shards, config, tok, vocab_size) -> None:
+    """Refuse to train on bytes we cannot show belong to this tokenizer.
+
+    A mismatched tokenizer fails *silently* -- the loss curve looks fine, the
+    checkpoints save, the dashboard is green, and every number is meaningless.
+    A pre-tokenized stream makes that worse, not better: there is no text to
+    eyeball, just integers that are all in-range for both mappings. Two
+    independent checks, both cheap:
+
+      1. identity  -- the resolved content_sha is the one the config pinned.
+      2. behaviour -- ids decode back to something that reads like English.
+
+    (1) catches pointing the run at the wrong catalog entry. (2) catches the
+    case (1) cannot: an unpinned run, or a stream whose bytes are fine but
+    were produced by a tokenizer nobody recorded."""
+    expected = config.get("data", {}).get("expect_content_sha", "")
+    resolved = os.environ.get("CHUK_DATASET", "")
+    if expected and resolved and expected != resolved:
+        raise SystemExit(
+            f"\n[v11-pretrain] REFUSING TO TRAIN -- dataset identity mismatch.\n"
+            f"  config pinned : {expected}\n"
+            f"    {CATALOG_STREAMS.get(expected, 'unknown to this unit')}\n"
+            f"  harness staged: {resolved}\n"
+            f"    {CATALOG_STREAMS.get(resolved, 'unknown to this unit')}\n"
+            f"Fix the run's `data:` block or the config's expect_content_sha.\n"
+        )
+
+    formats = {shard_format(p) for p in shards}
+    if len(formats) > 1:
+        raise SystemExit(
+            f"[v11-pretrain] REFUSING TO TRAIN -- mixed shard formats staged: {sorted(formats)}"
+        )
+    fmt = formats.pop()
+
+    if fmt == "u32-stream":
+        import numpy as np
+        head = np.fromfile(shards[0], dtype="<u4", count=4096)
+        if head.max() >= vocab_size:
+            raise SystemExit(
+                f"\n[v11-pretrain] REFUSING TO TRAIN -- staged stream contains token id "
+                f"{int(head.max())}, outside this tokenizer's vocabulary (size {vocab_size}).\n"
+                f"That is a different tokenizer's id space. Tokenizer loaded here: "
+                f"{PUBLISHED_TOKENIZER_SHA256[:16]}... (published v11).\n"
+            )
+        sample = tok.decode([int(i) for i in head[:256]])
+        space_ratio, avg_word_len = english_stats(sample)
+        if space_ratio < MIN_SPACE_RATIO or avg_word_len > MAX_AVG_WORD_LEN:
+            raise SystemExit(
+                f"\n[v11-pretrain] REFUSING TO TRAIN -- staged token ids do not decode to "
+                f"English through this tokenizer.\n"
+                f"  space ratio     {space_ratio:.3f} (need >= {MIN_SPACE_RATIO})\n"
+                f"  avg word length {avg_word_len:.1f} (need <= {MAX_AVG_WORD_LEN})\n"
+                f"The ids are all in range but the mapping is wrong -- exactly the silent "
+                f"failure this check exists for.\n"
+                f"First 120 chars decoded: {sample[:120]!r}\n"
+            )
+        print(f"[v11-pretrain] data identity OK: u32-stream, {len(shards)} shard(s), "
+              f"decode space_ratio={space_ratio:.3f} avg_word_len={avg_word_len:.1f}",
+              flush=True)
+    else:
+        print(f"[v11-pretrain] data identity OK: arrow-text, {len(shards)} shard(s) "
+              f"(tokenized here, at train time)", flush=True)
+
+
 def _staged_texts(seed):
-    """Read every shard chuk-train staged at ./data/<sha256> (spec sections
-    6/7.3 dispatch-time `data:` resolution) -- plain Arrow IPC files (HF
-    `datasets`' own on-disk cache format; the hash-only filename doesn't
-    change the bytes), fetched once by the control plane rather than each
-    worker separately streaming from HuggingFace. No network at train time.
-    Loaded whole and shuffled in-memory (unlike the streaming path's
-    windowed shuffle) since the shards are already local; deterministic
+    """Raw text shards (`tiny-model/tinystories-raw`) -- Arrow IPC, tokenized
+    on the worker. Loaded whole and shuffled in-memory (unlike the streaming
+    path's windowed shuffle) since the shards are already local; deterministic
     given the same seed."""
     import random
     import pyarrow as pa
     texts = []
-    for shard_path in sorted(Path("data").iterdir()):
-        if not shard_path.is_file():
-            continue
+    for shard_path in staged_shards():
         with pa.OSFile(str(shard_path), "rb") as f:
             # HF `datasets`' own on-disk cache format is the Arrow IPC
             # *streaming* variant (sequential, no footer) -- not the file
@@ -153,14 +303,36 @@ def _staged_texts(seed):
     yield from texts
 
 
+def _staged_u32_batches(max_seq, batch_size):
+    """Pre-tokenized streams (`tiny-model/v11-rust-tokenized-phase1`) -- flat
+    little-endian u32 ids, already packed into max_seq chunks at ingest.
+
+    Deliberately NOT reshuffled. The whole value of a content-addressed
+    pre-tokenized stream is that the token order *is* the artifact: pin the
+    sha and the run is bit-reproducible. Shuffling here would throw away the
+    reproducibility the pin just bought, so the seed does not touch this path."""
+    import numpy as np
+    ids = np.concatenate([np.fromfile(p, dtype="<u4") for p in staged_shards()])
+    n_chunks = len(ids) // max_seq
+    chunks = ids[: n_chunks * max_seq].reshape(n_chunks, max_seq).astype(np.int64)
+    for start in range(0, n_chunks - batch_size + 1, batch_size):
+        yield torch.from_numpy(chunks[start : start + batch_size].copy())
+
+
 def stream_batches(tok, max_seq, batch_size, seed):
     """Yields (batch_size, max_seq) long tensors -- same chunking logic as
     train_v11_replication.py's TinyStoriesDataset, just inlined so this unit
     has no dependency on tiny-model's own training module.
 
-    Text source is picked automatically: $CHUK_DATASET set (the harness
-    resolved a `data:` block and staged shards) reads them locally; unset
-    (standalone, or a run with no `data:` block) streams from HuggingFace."""
+    Source is picked automatically, in three cases: $CHUK_DATASET set (the
+    harness resolved a `data:` block and staged shards) reads them locally,
+    as either pre-tokenized u32 or raw Arrow text depending on what the bytes
+    actually are; unset (standalone, or a run with no `data:` block) streams
+    from HuggingFace at the pinned revision."""
+    if os.environ.get("CHUK_DATASET") and shard_format(staged_shards()[0]) == "u32-stream":
+        yield from _staged_u32_batches(max_seq, batch_size)
+        return
+
     bos_id = _special_id(tok, "<s>")
     texts = _staged_texts(seed) if os.environ.get("CHUK_DATASET") else _hf_stream_texts(seed)
     buffer, batch = [], []
@@ -206,6 +378,21 @@ def main() -> None:
     tok = Tokenizer.from_file(str(TOKENIZER_PATH))
     tokenizer_hash = sha256_file(TOKENIZER_PATH)
     vocab_size = tok.get_vocab_size()
+    if tokenizer_hash != PUBLISHED_TOKENIZER_SHA256:
+        raise SystemExit(
+            f"\n[v11-pretrain] REFUSING TO TRAIN -- vendored tokenizer is not the "
+            f"published v11 build.\n  expected: {PUBLISHED_TOKENIZER_SHA256}\n"
+            f"  vendored: {tokenizer_hash}\n"
+            f"Re-vendor from HF chrishayuk/v11-tokenizer or v-tokenizers/v11/artifacts/.\n"
+        )
+    if vocab_size != arch_cfg["vocab_size"]:
+        raise SystemExit(
+            f"\n[v11-pretrain] REFUSING TO TRAIN -- config.json says vocab_size "
+            f"{arch_cfg['vocab_size']}, tokenizer says {vocab_size}.\n"
+        )
+
+    if os.environ.get("CHUK_DATASET"):
+        check_data_identity(staged_shards(), config, tok, vocab_size)
 
     from tiny_model_v11 import TinyModel
     model = TinyModel(
