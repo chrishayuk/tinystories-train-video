@@ -21,6 +21,7 @@ import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
 TOKENIZER = HERE / "tokenizer" / "tokenizer.json"   # the published v11 build
 
 # the pinned revision used throughout — same documents, every run
@@ -65,19 +66,21 @@ def main(argv=None):
     if not args.tokens:
         return
 
-    from tokenizers import Tokenizer
-    if not TOKENIZER.exists():
-        sys.exit(f"missing tokenizer: {TOKENIZER}")
-    tok = Tokenizer.from_file(str(TOKENIZER))
-    inv = {i: p for p, i in tok.get_vocab().items()}
+    # V11Tokenizer rather than a bare Tokenizer.from_file: it verifies the
+    # file's sha256 against the published build. This act puts token IDs on
+    # screen, and "you can check these" is the claim -- so the tokenizer that
+    # produced them has to be provably the published one, exactly as repl.py
+    # requires before it will generate.
+    from demo_common import V11Tokenizer
+    tok = V11Tokenizer(TOKENIZER)
 
     text = stories[0]
-    ids = tok.encode(text).ids
+    ids = tok.encode(text)
 
     print(f"{BOLD}  And here is that first story as the model sees it{RESET}\n")
     head = text[:110].replace("\n", " ")
     print(f"  {DIM}text  {RESET}{head}…\n")
-    print(f"  {DIM}pieces{RESET} {[inv[i] for i in ids[:18]]}…\n")
+    print(f"  {DIM}pieces{RESET} {[tok.id_to_piece(i) for i in ids[:18]]}…\n")
     print(f"  {DIM}ids   {RESET}{ids[:18]}…\n")
 
     n = len(ids)

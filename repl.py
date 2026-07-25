@@ -20,6 +20,7 @@ Commands (type these instead of a prompt):
   /data [--tokens] TinyStories at the pinned revision — Act 1c
   /loop            the training loop itself — Act 1d
   /next <prompt>   top-10 next-word predictions instead of generating
+  /slots           all four Act 2a number slots at once, with the summary
   /greedy          always take the most likely token (deterministic)
   /sample          sample with temperature (default)
   /temp 0.8        set sampling temperature
@@ -58,6 +59,18 @@ from demo_common import (
     ARCH_CONFIG, ARTEFACTS, BOLD, DIM, GREEN, NUMBER_WORDS, RESET, TOKENIZER,
     TRAIN_PY, V11Tokenizer, check_vocab, missing_checkpoint_message,
 )
+
+
+# Act 2a. Slots where a NUMBER is the only sensible continuation -- the point
+# being what the model ranks, not what it generates. Kept next to the code that
+# uses them so the four figures the script quotes are re-derivable from one place.
+SLOT_PROMPTS = [
+    ("Once upon a time there were", "story idiom — no counting required"),
+    ("She counted the apples. There were", "counting, but no arithmetic"),
+    ("Lily had three apples and Tom gave her four more. Now Lily has",
+     "needs 3 + 4 = seven"),
+    ("Tom had two cats and one dog. Altogether he had", "needs 2 + 1 = three"),
+]
 
 
 def no_model_yet(path):
@@ -210,6 +223,46 @@ class Session:
 
         share = sum(p for t, p in top if t.lstrip("▁").lower() in NUMBER_WORDS)
         print(f"\n  number-word mass in top {k}: {BOLD}{share:.1%}{RESET}\n")
+        return top, share
+
+    @torch.no_grad()
+    def slots(self, k=10):
+        """Act 2a's four number slots at once, with the summary computed.
+
+        /next is the on-camera beat -- typed one at a time so the bar chart
+        renders live. This is the measuring tool: it re-derives the four figures
+        the script quotes, which have to be re-read after any retrain because
+        they are properties of the weights, not of the video.
+        """
+        print(f"\n  {BOLD}Four slots where a number is the only sensible next word{RESET}")
+        print("  " + "─" * 55)
+        rows = []
+        for prompt, note in SLOT_PROMPTS:
+            ids = self.encode(prompt)
+            logits = self.model(
+                torch.tensor([ids], device=self.device))[0, -1].float()
+            vals, idx = torch.topk(torch.softmax(logits, -1), k)
+            top = [(self.sp.id_to_piece(int(i)), float(v)) for v, i in zip(vals, idx)]
+            share = sum(p for t, p in top if t.lstrip("▁").lower() in NUMBER_WORDS)
+            rows.append((prompt, note, top, share))
+            head = "  ".join(
+                f"{GREEN if t.lstrip('▁').lower() in NUMBER_WORDS else DIM}"
+                f"{t.lstrip('▁')} {p:.3f}{RESET}" for t, p in top[:5])
+            print(f"\n  {DIM}{note}{RESET}")
+            print(f"  {prompt} {BOLD}___{RESET}")
+            print(f"    {head}")
+            print(f"    number-word mass: {BOLD}{share:.1%}{RESET}")
+
+        # Computed, never hardcoded: these figures are properties of whichever
+        # checkpoint is loaded, and a retrain silently invalidates any constant.
+        idiom, counting = rows[0][3], rows[1][3]
+        arith = [r[3] for r in rows[2:]]
+        reach = [t.lstrip("▁") for t, _ in rows[2][2][:3]]
+        print(f"\n  {DIM}idiom {idiom:.1%} · counting {counting:.1%} · "
+              f"arithmetic {min(arith):.1%}–{max(arith):.1%} "
+              f"(reaches for {', '.join(reach)}){RESET}")
+        print(f"  {DIM}Three tiers: it knows a quantity belongs after \"she counted\","
+              f" and cannot combine two.{RESET}\n")
 
 
 BANNER = f"""
@@ -307,6 +360,9 @@ def main():
                 show_data.main(rest.split() if rest else [])
             elif cmd == "/loop":
                 show_loop()
+            elif cmd == "/slots":
+                if s.ensure_model():
+                    s.slots()
             elif cmd == "/broker":
                 broker_not_built()
             elif cmd == "/next":

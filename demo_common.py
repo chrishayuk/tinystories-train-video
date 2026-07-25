@@ -1,14 +1,12 @@
-"""Shared plumbing for the on-camera demos — repl.py and cold_open.py.
+"""Shared plumbing for the tools that put tokenizer output on camera.
 
-Not a script: it declares no PEP 723 block and is never run directly. The two
-demos stay independently `uv run`-able; this only stops them carrying two copies
-of the tokenizer wrapper and the vocabulary guard, which is how those two copies
-quietly disagree.
+Not a script: no PEP 723 block, never run directly. Imported by repl.py (the
+on-camera tool) and show_data.py (Act 1c), which stay independently `uv run`-able.
 
-Everything here is the part that MUST be identical between them: which tokenizer
+Everything here is the part that MUST be identical across them: which tokenizer
 file, which sha it has to hash to, what counts as a number word, and what happens
-when a checkpoint and a tokenizer disagree. A drift in any of those changes what
-goes on screen.
+when a checkpoint and a tokenizer disagree. Those decide what goes on screen, so
+they live in one place rather than being copied and left to drift.
 """
 from __future__ import annotations
 
@@ -95,9 +93,9 @@ def check_vocab(config, tok, checkpoint):
 
 
 def missing_checkpoint_message(path: Path) -> str:
-    """Returned rather than printed, because the two callers need different
-    endings: repl.py prints it and carries on (the commands that need no weights
-    still work), cold_open.py exits on it."""
+    """Returned rather than printed so the caller picks the ending. repl.py
+    prints it and carries on, since the commands that need no weights still
+    work."""
     extra = ""
     if path.name == "model_compiled.pt":
         extra = (
