@@ -55,7 +55,8 @@ python3 - <<'PY'
 import hashlib, os, pathlib, shutil, sys
 from huggingface_hub import hf_hub_download
 repo = os.environ["CELLS_REPO"]
-data = pathlib.Path("training/data"); data.mkdir(parents=True, exist_ok=True)
+# Its own root, because the identity below is computed over a DIRECTORY.
+data = pathlib.Path("training/data/cells"); data.mkdir(parents=True, exist_ok=True)
 for name in ("cells_corpus.jsonl", "cells_token_map.json"):
     p = hf_hub_download(repo, name, repo_type="dataset")
     shutil.copyfile(p, data / name)

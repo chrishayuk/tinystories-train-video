@@ -50,8 +50,8 @@ from train_mathonly import (  # noqa: E402
 )
 
 ARTEFACTS = HERE.parent / "model_v11"
-CORPUS = HERE / "data" / "cells_corpus.jsonl"
-TOKEN_MAP = HERE / "data" / "cells_token_map.json"
+CORPUS = HERE / "data" / "cells" / "cells_corpus.jsonl"
+TOKEN_MAP = HERE / "data" / "cells" / "cells_token_map.json"
 RUN_DIR = HERE.parent / "run_cells"
 DONE_MARKER = "== done:"
 
