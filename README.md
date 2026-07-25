@@ -118,20 +118,26 @@ It's tempting to assume the model "puts a number in, and the number is wrong."
 **That is not what happens** — it doesn't produce a number at all. It narrates
 straight past the slot.
 
-Looking at the probabilities explains why (⚠️ **these numbers came from the
-retired checkpoint** and must be re-measured on the Act 1e model before they go
-on screen — the shape of the result is what matters, not the exact figures):
+Looking at the probabilities explains why. Measured on the published 16M-token
+model, 2026-07-25:
 
-| slot | number-word mass |
-|---|---|
-| `Once upon a time there were ___` | **99.1%** (`two` at 0.989) |
-| `She counted the apples. There were ___` | 2.5% |
-| `Lily had three apples… Now Lily has ___` | 1.2% |
-| `Tom had two cats and one dog. Altogether he had ___` | 3.4% |
+| slot | number-word mass | top token |
+|---|---|---|
+| `Once upon a time there were ___` | **99.4%** | `two` 0.992 |
+| `She counted the apples. There were ___` | 46.1% | `two` 0.449 |
+| `Lily had three apples… Now Lily has ___` | 14.0% | `a` 0.530 |
+| `Tom had two cats and one dog. Altogether he had ___` | 8.8% | `a` 0.588 |
 
-It is 98.9% certain about "two" where a story convention demands it, and reaches
-for "a"/"some"/"many" wherever arithmetic does. Number words are narrative
-texture to this model, not quantities — a ~40× swing between idiom and sum.
+**Three tiers, not two** — and the middle one is the interesting row. Pure idiom
+("there were") is at 99.4%. A *counting* context with no arithmetic is at 46% —
+the model half-knows a quantity belongs. Where arithmetic is actually required it
+drops to 9–14% and reaches for `a` instead. So it isn't that the model has no idea
+numbers exist; it has a partial one, and what it lacks specifically is
+**combining** them.
+
+`--slots` computes that closing line from what it measured rather than hardcoding
+it, so it can't drift on a retrain. The retired checkpoint gave 99.1 / 2.5 / 1.2 /
+3.4 — same ranking, a much sharper cliff — so quote these figures, not those.
 
 ## The tokenizer demos are the published CLI
 
