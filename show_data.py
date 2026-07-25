@@ -30,12 +30,12 @@ TOKENS_PHASE1 = 16_000_000
 DIM, GREEN, BOLD, RESET = "\033[2m", "\033[92m", "\033[1m", "\033[0m"
 
 
-def main():
-    ap = argparse.ArgumentParser()
+def main(argv=None):
+    ap = argparse.ArgumentParser(prog="/data")
     ap.add_argument("--rows", type=int, default=3, help="stories to show")
     ap.add_argument("--tokens", action="store_true", help="also show tokenization")
     ap.add_argument("--skip", type=int, default=0, help="skip N stories first")
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
 
     from datasets import load_dataset
 
