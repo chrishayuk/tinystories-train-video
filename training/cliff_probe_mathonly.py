@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # /// script
 # requires-python = ">=3.11"
-# dependencies = ["torch>=2.2", "sentencepiece>=0.2", "numpy"]
+# dependencies = ["torch>=2.2", "tokenizers>=0.20", "numpy"]
 # ///
 """Self-contained Act 3 cliff probe -- in-range vs. one/two-digit-past accuracy.
 
@@ -30,7 +30,6 @@ import torch.nn.functional as F
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
 
-TOKENIZER = HERE.parent / "tokenizer" / "v11_native.model"
 ARTEFACTS = HERE.parent / "model_v11"
 
 
@@ -84,9 +83,11 @@ def main():
     device = next(model.parameters()).device
     model.eval()
 
-    import sentencepiece as spm
-    sp = spm.SentencePieceProcessor()
-    sp.load(str(TOKENIZER))
+    # published v11, hash-verified -- see build_mathonly_corpus.py's note on why
+    # this is a guard and not a detail.
+    from demo_common import V11Tokenizer, check_vocab
+    sp = V11Tokenizer()
+    check_vocab(cfg, sp, args.ckpt)
 
     def encode(text):
         ids = sp.encode(text)

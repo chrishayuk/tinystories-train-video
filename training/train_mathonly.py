@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # /// script
 # requires-python = ">=3.11"
-# dependencies = ["torch>=2.2", "sentencepiece>=0.2", "numpy"]
+# dependencies = ["torch>=2.2", "tokenizers>=0.20", "numpy"]
 # ///
 """Self-contained maths-only (no cells) midtrain for Act 3 -- no cell80 dependency.
 
@@ -35,7 +35,9 @@ sys.path.insert(0, str(HERE.parent))  # vendored tiny_model_v11/ lives at the re
 
 ARTEFACTS = HERE.parent / "model_v11"
 CORPUS = HERE / "data" / "mathonly_corpus.jsonl"
+RUN_DIR = HERE.parent / "run_mathonly"
 PAD_ID = 0
+DONE_MARKER = "== done:"
 
 
 def val_nll(model, rows, device, bs=16):
@@ -82,9 +84,25 @@ def main():
     t0 = time.time()
 
     out_path = ARTEFACTS / "artifacts" / args.out
+    from replay_capture import completed_run, start_capture, check_corpus_vocab
     if out_path.exists() and not args.force:
-        raise SystemExit(f"REFUSING to run: {out_path} already exists — a result-bearing "
-                         f"checkpoint is never overwritten. Move it aside or pass --force.")
+        # A result-bearing checkpoint is never overwritten. But if the run that made
+        # it recorded a log, the useful answer is "here is how to watch it again"
+        # rather than just "no" -- that log is the Act 3 footage.
+        done = completed_run(RUN_DIR, DONE_MARKER)
+        extra = ""
+        if done is not None:
+            extra = (f"\n  Its log is intact, so replay it rather than retraining -- "
+                     f"those\n  loss values are the ones that produced this "
+                     f"checkpoint:\n"
+                     f"    uv run training/replay_run.py {RUN_DIR.name} "
+                     f"--speed 60 --max-gap 2\n")
+        raise SystemExit(
+            f"\nREFUSING to run: {out_path} already exists.\n{extra}"
+            f"\n  To train again anyway: --force (overwrites both the checkpoint "
+            f"and the log).\n")
+    if not args.smoke:
+        start_capture(RUN_DIR)
 
     from tiny_model_v11 import load_from_artifacts
     base, cfg = load_from_artifacts(str(ARTEFACTS), checkpoint=args.base_checkpoint, device="cpu")
@@ -93,6 +111,9 @@ def main():
           f"vocab {cfg.vocab_size} (native, no resize) ==", flush=True)
 
     rows = [json.loads(l) for l in Path(args.corpus).read_text().splitlines() if l.strip()]
+    # The corpus is pre-tokenized, so nothing in it says which tokenizer produced
+    # it. Check before spending hours on it.
+    check_corpus_vocab(rows, cfg.vocab_size, args.corpus)
     # last 10% of rows that came from TinyStories replay (identifiable: not produced by
     # drill_item's short canonical/narrative templates -- replay rows are the long ones)
     replay_idx = [i for i, r in enumerate(rows) if len(r["ids"]) > 40]

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # /// script
 # requires-python = ">=3.11"
-# dependencies = ["sentencepiece>=0.2", "datasets>=2.18"]
+# dependencies = ["tokenizers>=0.20", "datasets>=2.18"]
 # ///
 """Self-contained maths-only (no cells) corpus builder for Act 3.
 
@@ -35,10 +35,9 @@ import json
 import random
 from pathlib import Path
 
-import sentencepiece as spm
-
 HERE = Path(__file__).resolve().parent
-TOKENIZER = HERE.parent / "tokenizer" / "v11_native.model"
+import sys
+sys.path.insert(0, str(HERE.parent))
 OUT = HERE / "data" / "mathonly_corpus.jsonl"
 HUB_SHA = "f54c09fd23315a6f9c86f9dc80f725de7d8f9c64"  # pinned, matches show_data.py
 
@@ -132,10 +131,15 @@ def main():
     if args.smoke:
         args.drill = 500
 
-    if not TOKENIZER.exists():
-        raise SystemExit(f"missing tokenizer: {TOKENIZER}")
-    sp = spm.SentencePieceProcessor()
-    sp.load(str(TOKENIZER))
+    # The PUBLISHED v11 build, hash-verified. This used to load the retired
+    # SentencePiece `v11_native.model` (vocab 71261) -- which the tokenizer
+    # retirement deleted, so this script simply stopped working. The dangerous
+    # version of that bug is the one where the old file is still lying around: the
+    # corpus would be built in a 71261 id space, train_mathonly.py would train the
+    # 71260-vocab model on it without complaint, and the result would be fluent
+    # nonsense. Exactly the failure this project exists to stop shipping.
+    from demo_common import V11Tokenizer
+    sp = V11Tokenizer()
     rng = random.Random(args.seed)
 
     def encode(text):
