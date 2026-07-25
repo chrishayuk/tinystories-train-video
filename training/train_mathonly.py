@@ -294,12 +294,24 @@ def main():
                 nv = val_nll(base, val, device)
                 log.append({"step": step, "tokens": seen_tokens, "val_nll": nv})
                 print(f"  [replay check] step {step}: val NLL {nv:.4f}", flush=True)
-            if chuk_ckpt and args.save_every and step % args.save_every == 0:
-                write_harness_ckpt(base, Path(chuk_ckpt), step, seen_tokens, cfg)
             if args.save_every and step % args.save_every == 0:
-                snap = out_path.with_name(f"{out_path.stem}_s{step}{out_path.suffix}")
-                torch.save(base.state_dict(), snap)
-                print(f"  [saved] {snap.name} ({seen_tokens/1e6:.2f}M tok)", flush=True)
+                # ONE checkpoint per boundary, not two. On a worker the local .pt
+                # is pure redundancy -- the control plane ingests CHUK_CKPT_DIR,
+                # uploads it with lineage, and applies its own retention
+                # (keep_last/keep_every from the run spec), so writing both meant
+                # 1.2GB of identical weights per boundary into the job's /tmp
+                # working dir with nothing pruning the local half.
+                #
+                # Observed 2026-07-25 on a Colab T4: the run died silently at the
+                # first save boundary and the worker restarted it from the
+                # entrypoint, nine times, never getting past step ~1600. No
+                # traceback, which is what a SIGKILL looks like.
+                if chuk_ckpt:
+                    write_harness_ckpt(base, Path(chuk_ckpt), step, seen_tokens, cfg)
+                else:
+                    snap = out_path.with_name(f"{out_path.stem}_s{step}{out_path.suffix}")
+                    torch.save(base.state_dict(), snap)
+                    print(f"  [saved] {snap.name} ({seen_tokens/1e6:.2f}M tok)", flush=True)
             if args.sample_every and step % args.sample_every == 0:
                 report_samples(base, tok, device, cfg.max_seq,
                                f"step {step} ({seen_tokens/1e6:.2f}M tok)")
