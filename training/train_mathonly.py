@@ -104,12 +104,42 @@ def write_harness_ckpt(model, ckpt_dir: Path, step: int, tokens: int, cfg):
     print(f"  [harness ckpt] step_{step} ({tokens/1e6:.2f}M tok)", flush=True)
 
 
+# Cap positions per validation batch, not rows. The logits tensor is
+# [rows x positions x 71,260] at 4 bytes -- ~285 KB per POSITION -- so a fixed
+# row count blows up on long rows: 16 replay rows x ~250 tokens is a 1.08 GiB
+# allocation, which is what OOM'd a T4 (and only survived on MPS because unified
+# memory hid it). 1,024 positions is ~292 MB, which any 16 GB card can take
+# alongside the model and optimizer.
+#
+# Validation only. The training batcher is deliberately untouched: batch
+# composition affects gradients, so changing it would change the experiment.
+VAL_POSITION_BUDGET = 1024
+
+
+def val_batches(rows, budget=VAL_POSITION_BUDGET):
+    """Length-sorted, position-budgeted batches. Sorting first means a long row
+    pads against other long rows instead of dragging a whole batch up to its
+    length."""
+    ordered = sorted(rows, key=lambda r: len(r["ids"]))
+    batch: list = []
+    longest = 0
+    for r in ordered:
+        longest_if_added = max(longest, len(r["ids"]))
+        if batch and (len(batch) + 1) * longest_if_added > budget:
+            yield batch
+            batch, longest = [r], len(r["ids"])
+        else:
+            batch.append(r)
+            longest = longest_if_added
+    if batch:
+        yield batch
+
+
 def val_nll(model, rows, device, bs=16):
     model.eval()
     tot, n = 0.0, 0
     with torch.no_grad():
-        for i in range(0, len(rows), bs):
-            chunk = rows[i:i + bs]
+        for chunk in val_batches(rows):
             m = max(len(r["ids"]) for r in chunk)
             ids = torch.full((len(chunk), m), PAD_ID, dtype=torch.long)
             mask = torch.zeros((len(chunk), m))

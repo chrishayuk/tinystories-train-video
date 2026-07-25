@@ -40,8 +40,8 @@
         "generator": {
           "command": "uv run training/build_mathonly_corpus.py --drill 90000 --seed 90",
           "seed": 90,
-          "deterministic": true,
-          "note": "Regenerable from the command above. Registered anyway because determinism is a claim and content-addressing is a check -- the workers that rebuild this corpus per dispatch should be provably rebuilding the same bytes, and this corpus changed four times on 2026-07-25 while its shape was being settled."
+          "deterministic": "drill only",
+          "note": "CORRECTED 2026-07-25. The drill half IS deterministic -- pure-python RNG at seed 90, bit-identical across machines (1,859,026 tokens on both an M3 and a Colab T4). The REPLAY half is NOT: it streams TinyStories through datasets' shuffle(seed=90, buffer_size=10000), whose order depends on shard arrival, so a rebuild yields a slightly different replay set every time (1,521,190 vs 1,521,059 tokens; 96,889 vs 96,890 rows across two builds of the same command). Because train_mathonly.py takes its validation slice as the last 10% of replay rows, that difference changes the VALIDATION SET -- 663 rows on one build, 710 on another -- so replay-NLL numbers from separate builds are not comparable at all. This is precisely why the corpus is registered: fetching these bytes is the only way to get the reproducibility the seed was assumed to provide."
         },
         "composition": {
           "drill_rows": 90000,
