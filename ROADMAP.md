@@ -30,77 +30,117 @@ work behind it, so a cold start can pick up without re-deriving anything.
   generation ran on into template-echo (P-b 0.111 free vs 0.91/0.97 teacher-forced).
   90,000 drill rows now terminate; replay rows deliberately do not.
 
+- **Seed 80 is complete, and its whole curve is safe.** `EXEC-…-00028`, 12.00M
+  tokens, 22,012 steps. All 15 checkpoints (step 1500 → 22012) are on the Hub at
+  `chrishayuk/v11-tinystories-115m-mathonly-ckpts`, each verified against the
+  sha256 the Hub itself serves. They were rescued off the worker, not uploaded by
+  the rig — see below.
+- **Arithmetic arrived.** By 16M tokens the samples read `7 + 5 = 12` and
+  `Lily had 3 apples… → 7 apples`, both correct, while the same sum in number
+  words still reads `11 apples`. That is the taught band clearing, which is the
+  gate the outcome map puts before everything else.
+- **The CN-7 follow-up is registered.** `cn-8-mathonly-midtrain-cliff` under
+  `cell-native-architectures`, with SCRIPT.md's pre-registered outcome map as its
+  design and a logical run per seed. Seeds 81/82 carry `experiment_ref`; seed 80
+  predates the experiment and is joined by run id, with its caveats recorded.
+
 ## In flight
 
 | run | seed | state |
 |---|---|---|
-| `EXEC-…-00028` | 80 | training on Colab, identity-checked |
-| `EXEC-…-00029/30` | 81, 82 | queued behind it |
-| `EXEC-…-00031` | — | smoke pretrain, queued: the end-to-end test of the checkpoint upload path |
-| `EXEC-…-00027` | — | **zombie**, crash-looping on an old code unit, ignores cancels |
+| `EXEC-…-00028` | 80 | **complete**, checkpoints rescued to the Hub |
+| — | 81, 82 | to resubmit on unit `adf33a7a` once the fixed CP + worker are live |
+| — | — | `ckpt-path-preflight` to rerun first: the end-to-end proof the path works |
 
 ---
 
 ## Next actions, in order
 
-### 1. Fix checkpoint upload before trusting any run's output ⛔ blocking
+### 1. Checkpoint upload — root cause found, fixed, deploying ⛔ still blocking
 
-Checkpoints are **not landing**. `list_checkpoints` is empty for every run today
-despite `[harness ckpt] step_1500` in the logs. Root cause is identified in
-`chuk-compute-worker/src/outputs.rs` — a failed upload is marked collected and never
-retried, and the `Artifact` message is gated on success, so the loss is silent. Full
-write-up in gpu-training-harness's ROADMAP.
+**The recorded diagnosis was wrong**, and the wrong part mattered: this was never
+the worker. `outputs.rs` marking a failed upload collected is a real bug and is
+also fixed, but it is not what was happening — the uploads *succeeded*, which is
+why no log line ever appeared. Only failures log.
 
-Until this is fixed, **a finished run's checkpoint dies with its Colab runtime.**
-That is the single most important thing outstanding, because everything below
-consumes a checkpoint.
+`ingest_checkpoint` read the checkpoint back out of R2 to sha256 it:
 
-Interim rescue if a run must be saved: a second notebook cell that globs
-`/tmp/**/ckpt/step_*/model.safetensors` and pushes `.ready` dirs to HF. Safe
-alongside training (`.ready` is touched last).
+```rust
+let model = self.artifacts.get(...).await?;   // Vec<u8>
+let model_hash = hex::encode(Sha256::digest(&model));
+```
 
-### 2. Register the CN-7 follow-up experiment, and attach runs to it
+`model.safetensors` is **606,621,456 bytes**. The control plane is a
+shared-cpu-1x with **256 MB**. Not slow, not flaky — a 606MB `Vec` cannot exist
+in a 256MB machine, so ingest could never complete for any checkpoint, ever. It
+also explains the repeated `running` events on 00028: those are the worker
+reconnecting after the control plane died.
 
-Runs **are** mirrored to chuk-experiments — but into
-`gpu-training-harness/harness-runs`, whose own hypothesis says those are
-*"infrastructure dry-runs and unattached scratch work — not research conclusions."*
-Correct, because no submission passed `experiment_ref`.
+Fixed in gpu-training-harness (`64f23ab`, `b28b6bb`): the worker hashes each file
+as it uploads it — the bytes are already in hand, and the wire has carried unused
+`sha256`/`bytes` fields since M1 — and the CP uses that instead of fetching. Plus
+bounded retries, so `collected` means *uploaded*.
 
-CN-7's `next_action` asks for this arm to be registered as a follow-up under
-`cell-native-architectures`. Do that **before** the rerun, then pass
-`experiment_ref` on each seed. Register the **pre-registered outcome map** from
-SCRIPT.md § "PRE-REGISTERED outcome map" as the design — it was written before any
-result, and that is the only thing that makes it worth anything.
+**The second fix is the one that stops this recurring.** The archive sweep runs on
+a timer over every completed run with a checkpoint, and it reached Drive the same
+way. Fixing ingest alone would have moved the crash, not removed it: checkpoints
+would finally land and the next sweep would crash-loop the CP. Hot→final never
+needed the bytes (server-side CopyObject), so that is now unconditional; only the
+Drive leg is gated, and refuses above 64MiB rather than attempting it.
 
-Also: `whoami` reports `experiments_key_set: false`, so runs mirror under the shared
-default identity. Fixable on the dashboard's Team screen.
+Still open, and why Drive is not yet a real tier:
 
-### 3. Publish properly to HuggingFace
+- **Drive cannot take a checkpoint at all** until `upload_to_path` streams. Today
+  a checkpoint reaches R2Final and stops, so it lives on R2's lifecycle rules
+  rather than in the canonical copy.
+- **256 MB re-enables nothing.** Nothing now needs to hold a checkpoint, but both
+  the ingest fallback and the Drive leg are permanently disabled by it.
 
-**The rig has no HF integration at all** — checkpoints go R2Hot → R2Final → Drive.
-Publishing is manual and always will be until someone adds it.
+`training/colab_rescue_cell.py` is the tourniquet and it works — 15 checkpoints,
+9.1GB, hash-verified. Keep it until a run's checkpoints demonstrably land by
+themselves. It proves write access by creating the repo up front rather than
+reading `role`, because a fine-grained token reports `fineGrained`, not `read`,
+and sails past the obvious check before 403ing half a gigabyte later.
 
-`training/publish_pretrain_hf.py` is the right tool (five refusals, and it verifies
-by loading the *downloaded* artifact and generating). But **its card asserts "the
-base pretrain only… no maths mid-training" and "It cannot do arithmetic"**, both
-false for a mathonly checkpoint. Add a `--phase {pretrain,mathonly}` that swaps
-those sections. Do not ship the pretrain card for a midtrain checkpoint.
+### 2. ~~Register the CN-7 follow-up~~ — done, but one thing is not
 
-Intermediate checkpoints belong in a separate bucket repo
-(`…-mathonly-ckpts`, `seed80/step_N/`), not a headline model repo — the `--curve`
-probe wants several, and they are research artifacts rather than a release.
+`whoami` still reports `experiments_key_set: false`, so runs mirror under the
+shared default identity. Fixable on the dashboard's Team screen.
 
-### 4. Add pre-flight to the Colab cell
+### 3. Publish to HuggingFace — `--phase` landed; the join now exists
 
-Drafted this session; not yet committed. Checks hardware (GPU present, ≥13GB free,
+`publish_pretrain_hf.py --phase {pretrain,mathonly}` swaps the lede, the limits
+section, the training table's provenance rows, the tags and `not_included`. A
+fifth refusal checks it against the checkpoint's own `meta.json` phase, and runs
+*before* the tokenizer and vocabulary guards — those pass happily on a
+correctly-built checkpoint being published under the wrong story. Verified: the
+pretrain card renders byte-identical to what is on the Hub today.
+
+It would have refused every mathonly checkpoint anyway, because guard 1 wants
+`tokenizer_hash` and the trainer wrote five fields, none of them a join. It now
+writes the tokenizer hash, the base repo and sha the entrypoint verified, the
+corpus identity it re-proved, the seed, the run id and the emergence samples.
+
+**Seed 80's rescued checkpoints predate that** and carry none of it, so they are
+not publishable as a headline model without reconstructing the join by
+measurement from the sandbox that produced them. Seeds 81/82 will not have this
+problem. Decide whether seed 80 needs re-running for that reason alone — its
+*result* is fine, only its provenance is thin.
+
+### 4. Pre-flight for the Colab cell — the step-0 probe landed, the cell has not
+
+`train_mathonly.py` now writes a `step_0` checkpoint before the first gradient,
+so a broken write path shows up in seconds rather than forty minutes in. It makes
+the failure visible early, **not fatal** — the trainer has no credentials to ask
+whether the bytes landed, so checking `list_checkpoints` a minute in is the other
+half and belongs to whoever dispatched the run.
+
+Still to write: the cell-side pre-flight. Hardware (GPU present, ≥13GB free,
 disk), services (chuk-train, chuk-datasets, corpus identity registered), HF token
-**present and write-scoped**, and base model reachable. Add: chuk-experiments
-reachable, `experiment_ref` **resolves**, and `experiment_ref` **is set** for a
-research run — a seed replicate silently filed under `harness-runs` is worse than a
-failure, because the numbers exist and aren't findable.
-
-The strongest addition is a **step-0 probe checkpoint** in the trainer, so a broken
-upload path fails in seconds rather than at step 1,500.
+**proved writable, not assumed from its role**, base model reachable,
+chuk-experiments reachable, and `experiment_ref` both **resolving** and **set**
+for a research run — a seed replicate silently filed under `harness-runs` is
+worse than a failure, because the numbers exist and aren't findable.
 
 ### 5. Then, and only then, read the result
 

@@ -118,6 +118,21 @@ def sha256_file(path: Path) -> str:
     return h.hexdigest()
 
 
+# The run's own terminal output, and the loss series behind it. Both are tiny
+# next to a checkpoint and neither is recoverable once the runtime goes.
+#
+# train_replay.jsonl is the one that matters for the video: replay_run.py plays
+# a FINISHED run back at camera speed, and this is its exact-timing source
+# ({"t": seconds since start, "line": ...} per printed line). Without it, replay
+# falls back to reconstructing timestamps from tokens-per-second in the log
+# text. With it, what goes on screen is the run that actually produced these
+# weights -- on the T4 that produced them, at its real pace.
+RUN_ARTIFACTS = {
+    "train_replay.jsonl": "unit/run_mathonly/train_replay.jsonl",
+    "metrics.jsonl": "metrics.jsonl",
+}
+
+
 ckpts = complete_checkpoints(Path(SANDBOX_ROOT))
 if not ckpts:
     raise SystemExit(
@@ -214,6 +229,42 @@ if mismatched:
         "A run id identifies one training run, so the same step cannot honestly "
         "have two sets of weights. Resolve that before pushing anything else."
     )
+
+# ── 4b · the run's log and metrics ──────────────────────────────────────────
+# Discovered from the sandboxes rather than from the checkpoint list, so a
+# re-run of this cell still rescues logs after the checkpoints are already up.
+logs_pushed = []
+for sandbox in sorted(Path(SANDBOX_ROOT).glob(f"{SANDBOX_PREFIX}*")):
+    run_id = sandbox.name[len(SANDBOX_PREFIX):]
+    if ONLY_RUN and run_id != ONLY_RUN:
+        continue
+    for name, rel in RUN_ARTIFACTS.items():
+        src = sandbox / rel
+        if not src.is_file() or src.stat().st_size == 0:
+            continue
+        path_in_repo = f"{run_id}/{name}"
+        print(f"  {path_in_repo:52s} {src.stat().st_size/1e6:7.2f} MB  "
+              f"{sum(1 for _ in src.open('rb')):,} lines")
+        if DRY_RUN:
+            logs_pushed.append(path_in_repo)
+            continue
+        api.upload_file(
+            repo_id=REPO_ID, repo_type="model", path_or_fileobj=str(src),
+            path_in_repo=path_in_repo,
+            commit_message=f"Rescue {run_id} {name}",
+        )
+        logs_pushed.append(path_in_repo)
+
+if logs_pushed:
+    print(f"\nrescued {len(logs_pushed)} run artifact(s). Replay one on the Mac with:")
+    print("  from huggingface_hub import hf_hub_download; import shutil, pathlib")
+    print(f"  p = hf_hub_download({REPO_ID!r}, '<run id>/train_replay.jsonl')")
+    print("  d = pathlib.Path('run_mathonly'); d.mkdir(exist_ok=True)")
+    print("  shutil.copyfile(p, d / 'train_replay.jsonl')")
+    print("  # then: uv run training/replay_run.py run_mathonly --speed 60 --max-gap 2")
+else:
+    print("\nNo train_replay.jsonl or metrics.jsonl found. If this run trained with "
+          "--smoke, capture is deliberately off; otherwise the sandbox is gone.")
 
 # ── 5 · verify what the Hub SERVES, not what we sent ────────────────────────
 if DRY_RUN:
