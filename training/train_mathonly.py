@@ -72,6 +72,8 @@ def sample(model, tok, device, max_seq, max_new=14):
         full, head = tok.decode(ids), tok.decode(ids[:n_prompt])
         out.append((prompt, note, " ".join(full[len(head):].split())))
     model.train()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()   # single-row generation, again a different shape
     return out
 
 
@@ -153,6 +155,8 @@ def val_nll(model, rows, device, bs=16):
             tot += float((ce * w.reshape(-1)).sum())
             n += int(w.sum())
     model.train()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()   # val batches are a different shape to training
     return tot / max(1, n)
 
 

@@ -219,12 +219,40 @@ def drill_item(rng):
     return can if rng.random() < 0.5 else nar
 
 
+def content_sha(root: Path) -> str:
+    """The chuk-datasets identity of a built corpus, computed the same way the
+    catalog computes it: sha256(JCS(manifest_core)) over one shard per file,
+    ordered by path relative to root, size and offset as decimal strings.
+
+    Printed on every build so "deterministic" is a checkable claim rather than an
+    assumption -- two machines can compare one line instead of diffing 29MB. It is
+    also what `register.py verify` recomputes, so a mismatch here is a mismatch
+    against the catalog.
+    """
+    import hashlib
+    files = sorted((p for p in root.rglob("*") if p.is_file()),
+                   key=lambda p: str(p.relative_to(root)))
+    shards, off = [], 0
+    for f in files:
+        b = f.read_bytes()
+        shards.append({"sha256": hashlib.sha256(b).hexdigest(),
+                       "size": str(len(b)), "offset": str(off)})
+        off += len(b)
+    core = {"schema": "chuk-manifest-core-1", "shards": shards}
+    jcs = json.dumps(core, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(jcs.encode()).hexdigest()
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--drill", type=int, default=90000, help="number of drill items")
     ap.add_argument("--replay-frac", type=float, default=0.45)
     ap.add_argument("--seed", type=int, default=90)
     ap.add_argument("--smoke", action="store_true", help="tiny run: 500 drill items")
+    ap.add_argument("--expect-sha", default="",
+                    help="refuse unless the built corpus hashes to this chuk-datasets "
+                         "content_sha. Use it on a worker so a rebuild that silently "
+                         "differs fails loudly instead of training on the wrong bytes.")
     args = ap.parse_args()
     if args.smoke:
         args.drill = 500
@@ -285,9 +313,27 @@ def main():
     from datasets import load_dataset
     print(f"pulling TinyStories replay (pinned revision {HUB_SHA[:12]}) from HuggingFace...")
     ds = load_dataset("roneneldan/TinyStories", split="train", streaming=True, revision=HUB_SHA)
-    ds = ds.shuffle(seed=args.seed, buffer_size=10000)
+    # NO .shuffle() here, and that is the whole determinism fix.
+    #
+    # `ds.shuffle(seed=..., buffer_size=10000)` on a STREAMING dataset shuffles
+    # through a reservoir buffer, so the seed controls the shuffle but not what
+    # arrives to be shuffled -- buffer contents depend on shard arrival order. Two
+    # builds of the identical command therefore produced different replay sets
+    # (1,521,190 vs 1,521,059 tokens; 96,889 vs 96,890 rows), and because the
+    # trainer slices validation as the last 10% of replay rows, they validated on
+    # DIFFERENT DATA (663 rows vs 710). That, not device arithmetic, was most of a
+    # 1.6079-vs-1.4904 val-NLL gap first blamed on MPS-vs-CUDA.
+    #
+    # Streaming a pinned revision WITHOUT shuffling is deterministic: the shard
+    # list and the row order within each shard are fixed by the revision. So take
+    # that fixed order and select from it with our own seeded RNG -- deterministic
+    # order x deterministic RNG = a reproducible sample that still varies by seed.
+    replay_rng = random.Random(args.seed ^ 0x5EED)   # independent of the drill RNG
+    keep_prob = 0.25                                  # ~4x oversample of the target
     replay_tokens = 0
     for ex in ds:
+        if replay_rng.random() >= keep_prob:
+            continue
         txt = ex["text"].strip()
         if not txt:
             continue
@@ -307,6 +353,16 @@ def main():
     print(f"drill: {args.drill} rows, {drill_tokens:,} tokens")
     print(f"replay: {replay_tokens:,} tokens ({replay_tokens/total:.1%} of {total:,} total)")
     print(f"wrote {OUT} ({len(rows)} rows)")
+
+    sha = content_sha(OUT.parent)
+    print(f"chuk-datasets content_sha: {sha}")
+    if args.expect_sha and sha != args.expect_sha:
+        raise SystemExit(
+            "\nREFUSING -- the built corpus does not match the expected identity.\n"
+            f"  expected {args.expect_sha}\n  built    {sha}\n\n"
+            "Same command, different bytes. Do not train on this: a corpus that\n"
+            "differs silently is how two runs end up validating on different\n"
+            "data and their numbers get compared anyway.\n")
 
 
 if __name__ == "__main__":

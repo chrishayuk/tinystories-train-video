@@ -16,6 +16,19 @@
 set -e
 cd "$(dirname "$0")/.."
 
+# Fragmentation, not capacity, is what OOMs this on a 16GB card. The run needs
+# ~2GB live (115M weights + grads + AdamW state) but its allocator high-water
+# mark reached 13.84 of 16.11 GB and stayed: training batches of 16 replay rows
+# at 256 tokens are 4,096 positions = 1.17GB of logits held through the backward,
+# and val_nll every 2,000 steps plus sample() every 250 churn allocations of
+# different shapes on top. Classic fragmentation, and the exact case
+# expandable_segments exists for -- torch itself suggests it in the OOM message.
+#
+# Deliberately chosen over lowering --bs or capping batch positions: both of
+# those change batch composition, which changes gradients, which changes the
+# experiment. This changes only how the allocator lays memory out.
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+
 python3 -m pip install --quiet "tokenizers>=0.20" "datasets>=2.18" \
     "safetensors>=0.4" "huggingface_hub>=0.24"
 
@@ -46,8 +59,19 @@ torch.save(load_file(st), art / "model_full.pt")
 shutil.copyfile(hf_hub_download(repo, "config.json"), "model_v11/config.json")
 PY
 
-echo "[mathonly] building corpus (deterministic, seed 90)"
-python3 training/build_mathonly_corpus.py --drill 90000 --seed 90
+# The chuk-datasets identity this corpus MUST hash to. Every worker rebuilds it,
+# so without this a rebuild that silently differs trains happily on the wrong bytes
+# -- which is how two runs ended up validating on different data (663 rows vs 710)
+# and having their val-NLLs compared anyway.
+#
+# With it, each worker re-proves determinism before spending any GPU time, and a
+# multi-seed replicate is guaranteed to share a corpus rather than assumed to.
+# Override with MATHONLY_EXPECT_SHA= (empty) to build without checking.
+: "${MATHONLY_EXPECT_SHA=ff7bf26b359914344317729678884fb9fd8f1bac8e6916d67de416ab46fdf33f}"
+
+echo "[mathonly] building corpus (seed 90; identity-checked)"
+python3 training/build_mathonly_corpus.py --drill 90000 --seed 90 \
+    ${MATHONLY_EXPECT_SHA:+--expect-sha "$MATHONLY_EXPECT_SHA"}
 
 echo "[mathonly] training"
 exec python3 training/train_mathonly.py \
