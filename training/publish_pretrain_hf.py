@@ -47,6 +47,13 @@ WHAT THIS REFUSES TO DO, and why each refusal exists rather than a warning:
    published is how a citation quietly starts pointing at something else.
    --force exists because a retrain is legitimate, but it must be deliberate.
 
+5. DESCRIBE A CHECKPOINT AS SOMETHING IT IS NOT.
+   The card is not decoration; it is the claim. The pretrain card asserts "the
+   base pretrain only... no maths mid-training" and "it cannot do arithmetic",
+   and both are false of a mid-trained checkpoint. --phase selects the copy, and
+   the checkpoint's own meta.json `phase` is checked against it, so getting this
+   wrong is an error rather than a card nobody re-reads.
+
 WHAT IT DELIBERATELY DOES NOT DO: register the model as a transformers
 architecture. TinyModel is a 3-file Gemma-shaped decoder, not an AutoModel
 subclass, and shipping a `model_type` the Hub cannot resolve would give the repo
@@ -89,6 +96,42 @@ DATASET_REVISION = "f54c09fd23315a6f9c86f9dc80f725de7d8f9c64"
 # the video opens on; the first must read as English, the second must NOT contain
 # a correct sum -- that failure is the subject of Act 2, not a bug.
 VERIFY_PROMPT = "Once upon a time"
+
+# The maths mid-train corpus, as registered in the chuk-datasets catalog. The
+# identity is over the manifest, not the bytes -- see the roadmap note on
+# `"locations": []` -- so it anchors a rebuild rather than distributing one.
+MATHONLY_CORPUS = "tiny-model/mathonly-midtrain"
+
+# What each phase's card may claim. These two checkpoints differ in exactly the
+# places a reader cares about -- what training the weights have had, and what
+# they can therefore do -- and the wrong card asserts both falsely rather than
+# merely omitting them.
+PHASES = {
+    "pretrain": {
+        "meta_phase": None,   # pretrain meta.json predates the field entirely
+        "config_key": "pretrain_run",
+        "phase_note": "phase 1 only -- no frozen-FFN phase, no maths mid-train",
+        "tags": ["tinystories", "language-modeling", "from-scratch",
+                 "small-language-model"],
+        "not_included": [
+            "phase 2 frozen-FFN attention retrain",
+            "maths mid-train (Act 3)",
+            "cell-call mid-train (Act 4)",
+        ],
+    },
+    "mathonly": {
+        "meta_phase": "mathonly-midtrain",
+        "config_key": "midtrain_run",
+        "phase_note": "base pretrain + maths-only mid-train (Act 3), native vocab",
+        "tags": ["tinystories", "language-modeling", "small-language-model",
+                 "arithmetic", "mid-training"],
+        "not_included": [
+            "phase 2 frozen-FFN attention retrain",
+            "cell-call mid-train (Act 4)",
+            "vocabulary extension of any kind",
+        ],
+    },
+}
 
 
 def sha256_file(path: Path) -> str:
@@ -268,22 +311,25 @@ def build_release(step_dir: Path, out_dir: Path, args, meta: dict,
     cfg.pop("architecture", None)
     cfg["_note"] = ("Not a transformers architecture. Build TinyModel from the "
                     "tiny_model_v11/ package shipped in this repo -- see the model card.")
-    cfg["pretrain_run"] = {
+    spec = PHASES[args.phase]
+    cfg[spec["config_key"]] = {
         "step": meta.get("step"),
         "tokens": meta.get("tokens"),
         "param_count": param_count,
         "seed": args.seed,
         "batch_size": args.batch_size,
         "lr": args.lr,
-        "phase": "phase 1 only -- no frozen-FFN phase, no maths mid-train",
-        "corpus": f"{DATASET} @ {DATASET_REVISION}",
+        "phase": spec["phase_note"],
+        "corpus": (f"{DATASET} @ {DATASET_REVISION}" if args.phase == "pretrain"
+                   else f"{MATHONLY_CORPUS} @ {meta.get('corpus_identity')}"),
         "run_config": args.run_config,
     }
     (out_dir / "config.json").write_text(json.dumps(cfg, indent=2) + "\n")
     (out_dir / "emergence.json").write_text(json.dumps(emergence, indent=2) + "\n")
 
     provenance = {
-        "schema": "v11-pretrain-provenance-1",
+        "schema": f"v11-{args.phase}-provenance-1",
+        "phase": args.phase,
         "model_sha256": model_sha,
         "tokenizer_sha256": tokenizer_sha,
         "tokenizer_repo": TOKENIZER_REPO,
@@ -294,7 +340,8 @@ def build_release(step_dir: Path, out_dir: Path, args, meta: dict,
         "seed": args.seed,
         "source_repo": "https://github.com/chrishayuk/tinystories-train-video",
         "source_commit": args.source_commit or None,
-        "trainer": "training/harness_pretrain/train.py",
+        "trainer": ("training/harness_pretrain/train.py" if args.phase == "pretrain"
+                    else "training/train_mathonly.py"),
         "run_config": args.run_config,
         "corpus": {
             "hub_dataset": DATASET,
@@ -305,12 +352,32 @@ def build_release(step_dir: Path, out_dir: Path, args, meta: dict,
                 "the bit-reproducible alternative and is NOT what produced these weights."
             ),
         },
-        "not_included": [
-            "phase 2 frozen-FFN attention retrain",
-            "maths mid-train (Act 3)",
-            "cell-call mid-train (Act 4)",
-        ],
+        "not_included": spec["not_included"],
     }
+    if args.phase == "mathonly":
+        # Copied out of the checkpoint's own meta.json, not re-derived here. Each
+        # was verified by the thing that used it -- the entrypoint refuses to
+        # train if the base or the corpus hashes differently -- so this is a
+        # record of a check that happened, not a claim made at publish time.
+        provenance["base"] = {
+            "repo": meta.get("base_repo"),
+            "sha256": meta.get("base_sha256"),
+            "note": "These weights are that checkpoint, continued. Not a fresh run.",
+        }
+        provenance["corpus"] = {
+            "catalog": MATHONLY_CORPUS,
+            "identity": meta.get("corpus_identity"),
+            "file_sha256": meta.get("corpus_file_sha256"),
+            "replay_source": DATASET,
+            "replay_revision": DATASET_REVISION,
+            "note": (
+                "Registered identity is over the manifest, not the bytes, so the corpus "
+                "is rebuilt per worker and re-proved against this hash before training. "
+                "file_sha256 is the rebuilt corpus on the machine that produced these "
+                "weights."
+            ),
+        }
+        provenance["run_id"] = meta.get("run_id")
     (out_dir / "provenance.json").write_text(json.dumps(provenance, indent=2) + "\n")
 
     (out_dir / "README.md").write_text(
@@ -321,6 +388,123 @@ def build_release(step_dir: Path, out_dir: Path, args, meta: dict,
              if p.is_file() and p.name != "checksums.sha256"]
     (out_dir / "checksums.sha256").write_text("\n".join(lines) + "\n")
     return provenance, model_sha
+
+
+def card_lede(phase: str, args, params: int, tokens: int, provenance: dict) -> str:
+    """The paragraph directly under the title: what these weights have had done
+    to them. The single most-read sentence in the repo, and the one the wrong
+    card gets flatly wrong."""
+    tokenizer_link = f"[v11 tokenizer](https://huggingface.co/{TOKENIZER_REPO})"
+    if phase == "pretrain":
+        return (
+            f"A {params/1e6:.1f}M-parameter decoder-only transformer trained "
+            f"**from scratch** on\nTinyStories for {tokens/1e6:.0f}M tokens, using the\n"
+            f"{tokenizer_link}.\n") + f"""
+This is the **base pretrain only**: phase 1, no frozen-FFN attention retrain, and
+**no maths mid-training**. It writes competent children's-story English and it
+**cannot do arithmetic** — it narrates straight past the place a number belongs
+rather than putting a wrong number there. That is the intended state of this
+checkpoint, not a defect: it is the starting point for the mid-training
+experiments in
+[tinystories-train-video](https://github.com/chrishayuk/tinystories-train-video).
+"""
+    base = provenance.get("base", {})
+    return (
+        f"A {params/1e6:.1f}M-parameter decoder-only transformer that learned English on\n"
+        f"TinyStories and was then taught addition, using the {tokenizer_link}.\n") + f"""
+This is a base pretrain **continued on a maths mid-training corpus** — Act 3 of
+[tinystories-train-video](https://github.com/chrishayuk/tinystories-train-video).
+It is **not** a fresh training run: it starts from
+[`{base.get('repo') or 'the published base'}`](https://huggingface.co/{base.get('repo', '')})
+(`{(base.get('sha256') or '')[:16]}…`), adds {tokens/1e6:.1f}M tokens of in-tier addition drills
+mixed with TinyStories replay, and **extends no vocabulary** — the corpus never
+mentions a cell, so the embedding table is the native {cfg_vocab(args)} rows end to end.
+
+The mid-training corpus is content-addressed as `{MATHONLY_CORPUS}`
+(`{(provenance.get('corpus', {}).get('identity') or 'unregistered')[:16]}…`), so a replicate is
+guaranteed to have been taught the same thing rather than assumed to.
+"""
+
+
+def card_limits(phase: str, tokens: int, emergence: dict, maths_evidence: str) -> str:
+    """"What this model cannot do". For the pretrain that is a settled fact. For
+    the mid-train it is the experiment's result, so this reports what the
+    checkpoint actually generates and declines to grade it -- the grading is
+    pre-registered elsewhere and does not belong on a model card."""
+    tail = (
+        f"It has also seen {tokens/1e6:.0f}M tokens, which is **not converged**. Continued\n"
+        f"training on more or less anything improves it, so do not read an improvement after\n"
+        f"mid-training as evidence that the mid-training data helped specifically.\n")
+    if phase == "pretrain":
+        return f"""## What this model cannot do
+
+It cannot do arithmetic. Nothing in TinyStories teaches addition, and number words
+in that corpus are narrative texture rather than quantities — "once upon a time
+there were two" is an idiom the model learns the way it learns "happily ever
+after".
+
+The interesting part is *how* it fails. It does not answer with a wrong number; it
+carries on telling the story, straight past the place a number belongs.
+
+{maths_evidence}
+{tail}"""
+    return f"""## What this model can and cannot do
+
+This checkpoint exists to be measured, not to be believed. `emergence.json` holds
+its greedy generations at every milestone, from the same prompts throughout, and
+those prompts were chosen before the run to separate four different things:
+
+- an **in-tier canonical** sum (`7 + 5 =`) — inside the taught range;
+- an **out-of-tier** sum (`394 + 251 =`) — one decimal digit past it, which should
+  stay wrong, because getting it right would mean the tier boundary leaked;
+- the same in-tier sum **in narrative digits** — the corpus's own surface form;
+- the same sum **in number words**, which never appears in the corpus in any form.
+
+Those last two are the whole question: matching the corpus surface is consistent
+with having memorised a distribution, and only the unseen surface distinguishes
+that from having learned an algorithm.
+
+{maths_evidence}
+**Do not read the arithmetic samples as an accuracy figure.** They are a handful of
+greedy generations. The measurement is `training/heldout_probe_mathonly.py --curve` at
+n≥250 per band, read against a pre-registered outcome map, and a `taught` band that
+has not yet learned its own facts makes every other number in that table
+uninterpretable.
+
+{tail}"""
+
+
+def cfg_vocab(args) -> str:
+    return f"{json.loads(ARCH_CONFIG.read_text())['vocab_size']:,}"
+
+
+def corpus_rows(phase: str, provenance: dict) -> str:
+    """The Training table's provenance rows. A mid-train has two inputs a
+    pretrain does not have at all -- the weights it started from and a corpus
+    that is not a public dataset -- and both are identities, not names."""
+    if phase == "pretrain":
+        return (f"| Corpus | [`{DATASET}`](https://huggingface.co/datasets/{DATASET}) "
+                f"@ `{DATASET_REVISION[:12]}…` |\n")
+    base = provenance.get("base", {})
+    corpus = provenance.get("corpus", {})
+    return (
+        f"| Base checkpoint | [`{base.get('repo') or '—'}`]"
+        f"(https://huggingface.co/{base.get('repo', '')}) `{(base.get('sha256') or '')[:12]}…` |\n"
+        f"| Corpus | `{MATHONLY_CORPUS}` `{(corpus.get('identity') or 'unregistered')[:12]}…` |\n"
+        f"| Corpus replay source | [`{DATASET}`](https://huggingface.co/datasets/{DATASET}) "
+        f"@ `{DATASET_REVISION[:12]}…` |\n")
+
+
+def corpus_note(phase: str) -> str:
+    if phase == "pretrain":
+        return ("The dataset revision is pinned, so the document set is reproducible and held-out\n"
+                "text can be shown never to have been trained on.")
+    return (
+        "The corpus identity is checked by the training entrypoint *before* it spends any\n"
+        "GPU time, so a rebuild that silently differs refuses rather than trains. That\n"
+        "matters more here than it sounds: an earlier pair of runs was compared across\n"
+        "machines while validating on different data, because the corpus was rebuilt per\n"
+        "host and nothing re-proved it was the same corpus.")
 
 
 def render_card(args, cfg, provenance, emergence, model_sha, tokenizer_sha) -> str:
@@ -336,19 +520,28 @@ def render_card(args, cfg, provenance, emergence, model_sha, tokenizer_sha) -> s
     embed_params = cfg["vocab_size"] * cfg["dim"]
     embed_pct = 100.0 * embed_params / params if params else 0.0
 
-    # Quote THIS run's own generation for the arithmetic prompt rather than
-    # describing the failure from memory. The behaviour was characterised on an
-    # earlier checkpoint trained with a different tokenizer, so restating it as a
-    # property of these weights would be inheriting a measurement.
+    # Quote THIS run's own generations rather than describing the behaviour from
+    # memory. The pretrain's failure mode was characterised on an earlier
+    # checkpoint trained with a different tokenizer, and the midtrain's result is
+    # the thing under test -- restating either as a property of these weights
+    # would be inheriting a measurement.
     final = emergence["milestones"][-1]["samples"] if emergence["milestones"] else {}
-    maths = next(((p, s) for p, s in final.items() if "gave her four more" in p), None)
-    if maths:
+    if args.phase == "pretrain":
+        quoted = [(p, s) for p, s in final.items() if "gave her four more" in p]
+    else:
+        # All four arithmetic prompts, because for a mid-trained checkpoint the
+        # comparison BETWEEN them is the finding; any one alone is a claim.
+        quoted = [(p, s) for p, s in final.items() if p != VERIFY_PROMPT]
+    if quoted:
+        lines = "\n".join(f"> *{p}* **{' '.join(s.split())}**\n" for p, s in quoted)
+        noun = "generation" if len(quoted) == 1 else "generations"
         maths_evidence = (
-            f"Its own generation at the final milestone, greedy, from this run:\n\n"
-            f"> *{maths[0]}* **{' '.join(maths[1].split())}**\n")
+            f"Its own {noun} at the final milestone, greedy, from this run:\n\n{lines}")
     else:
         maths_evidence = (
             "See `emergence.json` for what it actually generates on arithmetic prompts.\n")
+
+    tags = "\n".join(f"  - {t}" for t in PHASES[args.phase]["tags"])
 
     return f"""---
 language:
@@ -359,26 +552,12 @@ inference: false
 datasets:
   - {DATASET}
 tags:
-  - tinystories
-  - language-modeling
-  - from-scratch
-  - small-language-model
+{tags}
 ---
 
 # {args.repo_id.split('/')[-1]}
 
-A {params/1e6:.1f}M-parameter decoder-only transformer trained **from scratch** on
-TinyStories for {tokens/1e6:.0f}M tokens, using the
-[v11 tokenizer]({f"https://huggingface.co/{TOKENIZER_REPO}"}).
-
-This is the **base pretrain only**: phase 1, no frozen-FFN attention retrain, and
-**no maths mid-training**. It writes competent children's-story English and it
-**cannot do arithmetic** — it narrates straight past the place a number belongs
-rather than putting a wrong number there. That is the intended state of this
-checkpoint, not a defect: it is the starting point for the mid-training
-experiments in
-[tinystories-train-video](https://github.com/chrishayuk/tinystories-train-video).
-
+{card_lede(args.phase, args, params, tokens, provenance)}
 ## Loading
 
 Not an `AutoModel` — `TinyModel` is a 3-file Gemma-shaped decoder (RMSNorm, RoPE,
@@ -459,8 +638,7 @@ an error, so that join is checked mechanically at publish time, not asserted her
 
 | | |
 |---|---|
-| Corpus | [`{DATASET}`](https://huggingface.co/datasets/{DATASET}) @ `{DATASET_REVISION[:12]}…` |
-| Tokens | {tokens/1e6:.0f}M |
+{corpus_rows(args.phase, provenance)}| Tokens | {tokens/1e6:.0f}M |
 | Steps | {provenance['steps']:,} |
 | Batch × context | {args.batch_size} × {cfg['max_seq']} |
 | Optimiser | AdamW, lr {args.lr}, weight decay 0.01, grad clip 1.0 |
@@ -468,13 +646,12 @@ an error, so that join is checked mechanically at publish time, not asserted her
 | Seed | {args.seed} |
 | Precision | fp32 |
 
-The dataset revision is pinned, so the document set is reproducible and held-out
-text can be shown never to have been trained on.
+{corpus_note(args.phase)}
 
 ## Capability emergence
 
 `emergence.json` carries the generations captured at each milestone, plus the
-loss trace. Greedy, 30 new tokens, same prompts throughout:
+loss trace. Greedy, {30 if args.phase == "pretrain" else 14} new tokens, same prompts throughout:
 
 | Tokens | Step | First sample continuation |
 |---|---|---|
@@ -483,21 +660,7 @@ loss trace. Greedy, 30 new tokens, same prompts throughout:
 Only the final row's weights are published here; the earlier rows are the same
 run mid-flight.
 
-## What this model cannot do
-
-It cannot do arithmetic. Nothing in TinyStories teaches addition, and number words
-in that corpus are narrative texture rather than quantities — "once upon a time
-there were two" is an idiom the model learns the way it learns "happily ever
-after".
-
-The interesting part is *how* it fails. It does not answer with a wrong number; it
-carries on telling the story, straight past the place a number belongs.
-
-{maths_evidence}
-It has also seen {tokens/1e6:.0f}M tokens, which is **not converged**. Continued
-training on more or less anything improves it, so do not read an improvement after
-mid-training as evidence that the mid-training data helped specifically.
-
+{card_limits(args.phase, tokens, emergence, maths_evidence)}
 ## Intended use
 
 Research and teaching on compact language models: mid-training, tool-use /
@@ -522,6 +685,9 @@ def main() -> None:
     ap.add_argument("--step", type=int, default=None,
                     help="which milestone; default = highest complete one")
     ap.add_argument("--repo-id", required=True)
+    ap.add_argument("--phase", choices=sorted(PHASES), default="pretrain",
+                    help="which card and provenance to ship; checked against the "
+                         "checkpoint's own meta.json")
     ap.add_argument("--metrics", type=Path, default=None,
                     help="metrics.jsonl, for the loss trace in emergence.json")
     ap.add_argument("--output-dir", type=Path, default=None)
@@ -550,6 +716,32 @@ def main() -> None:
             f"train.py touches it only after both {MODEL_FILE} and meta.json are on disk, "
             f"so this checkpoint was interrupted mid-write.\n")
     meta = json.loads((step_dir / "meta.json").read_text())
+
+    # --- guard 5: the card must describe THIS checkpoint -----------------------
+    # Before the tokenizer and vocabulary guards, because those two pass happily
+    # on a correctly-built checkpoint being published under the wrong story --
+    # and the story is what people read.
+    want_phase = PHASES[args.phase]["meta_phase"]
+    got_phase = meta.get("phase")
+    if got_phase != want_phase:
+        expected = f"{want_phase!r}" if want_phase else "no `phase` field (the pretrain trainer writes none)"
+        sys.exit(
+            f"\nREFUSING TO PUBLISH -- --phase {args.phase} does not match this checkpoint.\n"
+            f"  meta.json phase: {got_phase!r}\n"
+            f"  --phase {args.phase} expects: {expected}\n\n"
+            f"The pretrain card asserts \"the base pretrain only... no maths mid-training\" "
+            f"and \"it cannot do arithmetic\". Both are false of a mid-trained checkpoint, "
+            f"and a card is a claim rather than decoration.\n")
+
+    # The mid-train stamps its own hyperparameters into every checkpoint, so read
+    # them off the artifact rather than off flags that can disagree with it
+    # silently. The pretrain predates that and still needs them passed.
+    if args.phase == "mathonly":
+        for flag, key in (("seed", "seed"), ("batch_size", "batch_size"), ("lr", "lr")):
+            if meta.get(key) is not None:
+                setattr(args, flag, meta[key])
+        if args.run_config == ap.get_default("run_config"):
+            args.run_config = "training/run_mathonly_unit.sh (chuk-train entrypoint `midtrain`)"
 
     # --- guard 1: the checkpoint/tokenizer join --------------------------------
     tokenizer_sha = sha256_file(TOKENIZER_JSON)
