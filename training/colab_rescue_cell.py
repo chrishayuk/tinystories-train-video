@@ -67,6 +67,28 @@ if owner != who.get("name") and owner not in {o["name"] for o in who.get("orgs",
         f"which is neither that account nor one of its orgs -- the push would 403."
     )
 
+# Prove the token can write, rather than inferring it from `role`. A
+# fine-grained token reports role "fineGrained" -- not "read" -- so the check
+# above waves it through, and it then 403s on repo creation AFTER half a
+# gigabyte has been read and hashed. Creating the repo is idempotent
+# (exist_ok), costs one request, and is the only thing that actually answers
+# "may this token write here".
+if not DRY_RUN:
+    try:
+        api.create_repo(REPO_ID, repo_type="model", exist_ok=True, private=PRIVATE)
+    except Exception as error:
+        raise SystemExit(
+            f"This token cannot write to {REPO_ID}:\n\n  {error}\n\n"
+            f"If it is a FINE-GRAINED token, it needs BOTH permissions, and the\n"
+            f"first is easy to miss because the repo does not exist yet:\n"
+            f"  - Repositories -> 'Create' (or pre-create {REPO_ID} by hand)\n"
+            f"  - Repositories -> 'Write' access to it\n"
+            f"Edit it at https://huggingface.co/settings/tokens, then rerun this "
+            f"cell.\nNothing has been uploaded and nothing on this box has been "
+            f"touched, so rerunning is free."
+        ) from None
+    print(f"Hub: write access to {REPO_ID} confirmed")
+
 # ── 2 · what is on this box ─────────────────────────────────────────────────
 def complete_checkpoints(root: Path):
     """(run_id, step, dir) for every checkpoint the trainer finished writing.
@@ -171,7 +193,6 @@ for run_id, step, d in ckpts:
         ),
     }, indent=2) + "\n")
 
-    api.create_repo(REPO_ID, repo_type="model", exist_ok=True, private=PRIVATE)
     api.upload_folder(
         repo_id=REPO_ID, repo_type="model", folder_path=str(d),
         path_in_repo=path_in_repo,
