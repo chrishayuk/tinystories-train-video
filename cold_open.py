@@ -112,7 +112,8 @@ def no_model_yet(path):
         f"  The pre-existing 71261-vocab model has been retired -- every demo\n"
         f"  that generates text now runs on the Act 1e model, which has not been\n"
         f"  trained yet. See SCRIPT.md, \"What still needs running\" item 1.\n\n"
-        f"  demo_tokenizer.py and show_data.py need no checkpoint and work today.\n")
+        f"  show_data.py, show_params.py and the v11 CLI need no checkpoint\n"
+        f"  and work today.\n")
 
 def load(checkpoint="model_compiled.pt", device=None):
     from tiny_model_v11 import load_from_artifacts
