@@ -14,7 +14,7 @@ tokenizer/checkpoint config. All public.
 ```
 repl.py                ★ interactive — type prompts live on camera
 cold_open.py           the same demos pre-canned, for rehearsal and reference
-demo_tokenizer.py      the on-camera tokenizer demos
+show_params.py         where the 115.1M parameters go (Act 1a)
 show_data.py           what TinyStories actually looks like (Act 1c)
 run_broker.sh          ★ the closing shot — model calls a Z80 cell, narrates the answer
 
@@ -24,7 +24,6 @@ model_v11/               where the Act 1e checkpoint will land (empty — see be
 
 tokenizer/
   tokenizer.json              ★ the PUBLISHED v11 build — the only tokenizer here
-  v11_tokenizer_README.md     the knowledge-first tokenizer description
 
 unit.toml                the chuk-train code-unit manifest (must live at repo root)
 configs/
@@ -54,7 +53,7 @@ Every script declares its own dependencies inline (PEP 723), so each is just:
 ```bash
 uv run repl.py
 uv run cold_open.py --slots
-uv run demo_tokenizer.py --section 2
+uv run show_params.py
 uv run show_data.py --tokens
 ```
 
@@ -110,22 +109,43 @@ It is 98.9% certain about "two" where a story convention demands it, and reaches
 for "a"/"some"/"many" wherever arithmetic does. Number words are narrative
 texture to this model, not quantities — a ~40× swing between idiom and sum.
 
-## Running the tokenizer demos
+## The tokenizer demos are the published CLI
 
-No repo paths, no network — reads only from `./tokenizer/`.
+They used to be `demo_tokenizer.py`. They are now the real tool, which is
+strictly better on camera: a viewer runs the identical command.
 
 ```bash
-uv run demo_tokenizer.py
-uv run demo_tokenizer.py --section 2
+cargo install v11-cli
+
+v11 vocab --blocks                        # the assembled layout, one screen
+v11 vocab --from 432 --count 10           # the ten digits
+v11 encode --text "Once upon a time" --show-pieces
+v11 pieces --text "157 divided by 16"
 ```
 
-| Section | Script beat | Shows |
-|---|---|---|
-| 1 | Act 1b | what a token is — `Once upon a time` → 4 pieces |
-| 2 | Act 2b | the vocabulary walked in ID order; the hand-built blocks |
-| 3 | Act 2b | number words are 1 token, digits split one per token |
-| 4 | Act 1a | 36.5M of 115.1M parameters is just the embedding table |
+| Script beat | Command |
+|---|---|
+| Act 1b — what a token is | `v11 encode --text "Once upon a time" --show-pieces` |
+| Act 2b — assembled, not discovered | `v11 vocab --blocks` |
+| Act 2b — the digits | `v11 vocab --from 432 --count 10` |
+| Act 2b — digits split, words don't | `v11 pieces --text …` |
+| Act 1a — a third of the model is its vocabulary | `uv run show_params.py` |
 
+`v11 vocab` was added for this (v-tokenizers `v11/cli`): a range walk plus
+`--blocks`, which reports contiguous runs of same-kind pieces. The kinds are
+derived from the pieces themselves rather than a hardcoded map, so the summary
+stays honest if the vocabulary is ever rebuilt.
+
+Act 1a stayed a script because it isn't a tokenizer question — it's model
+arithmetic that happens to be about the vocabulary. It reads the architecture
+from `training/harness_pretrain/config.json`, so it can't drift from the config
+the Act 1e run uses.
+
+`v11.vocab.bin` ships in the Hugging Face repo alongside `tokenizer.json`, so
+the CLI works from a clean machine with no clone — `cargo install v11-cli`,
+download that one file, done. crates.io carries code and not data, so without
+it every CLI example would be unrunnable. Verified end to end against the
+published copy.
 
 ## The published v11 tokenizer
 
@@ -164,7 +184,7 @@ fluent nonsense:
 ```
 
 **Every demo that generates text is therefore blocked on the Act 1e pretrain.**
-`demo_tokenizer.py` and `show_data.py` need no model and work today. See
+`show_data.py`, `show_params.py` and the `v11` CLI need no model and work today. See
 SCRIPT.md "What still needs running" items 1 and 5 for the sequencing — Act 4
 is the long pole, because its cell80-side checkpoints need rebuilding too.
 
