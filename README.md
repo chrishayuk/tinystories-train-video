@@ -119,21 +119,31 @@ It's tempting to assume the model "puts a number in, and the number is wrong."
 straight past the slot.
 
 Looking at the probabilities explains why. Measured on the published 16M-token
-model, 2026-07-25:
+model, 2026-07-25 (`/slots`) — a ladder, not a cliff:
 
 | slot | number-word mass | top token |
 |---|---|---|
 | `Once upon a time there were ___` | **99.4%** | `two` 0.992 |
+| `Lily counted her toys. One, two, ___` | **93.7%** | `three` 0.591 |
 | `She counted the apples. There were ___` | 46.1% | `two` 0.449 |
-| `Lily had three apples… Now Lily has ___` | 14.0% | `a` 0.530 |
-| `Tom had two cats and one dog. Altogether he had ___` | 8.8% | `a` 0.588 |
+| `There were five ducks. Two swam away. Now there are ___` | 10.9% | `two` 0.109 |
+| `Anna is four years old. Next year she will be ___` | **0.0%** | `very` 0.155 |
 
-**Three tiers, not two** — and the middle one is the interesting row. Pure idiom
-("there were") is at 99.4%. A *counting* context with no arithmetic is at 46% —
-the model half-knows a quantity belongs. Where arithmetic is actually required it
-drops to 9–14% and reaches for `a` instead. So it isn't that the model has no idea
-numbers exist; it has a partial one, and what it lacks specifically is
-**combining** them.
+**Row 2 is the interesting one, and it is a trap.** 93.7% mass with the count
+sequence ranked correctly — `three > four > five > six`. By that chart the model can
+count. Generate from the same prompt and it says *"three, four, four, five, five,
+five, five…"* forever: each step is a local next-token guess with no counter, and
+TinyStories almost never counts past five. **A metric that reads "competent" over
+behaviour that plainly isn't** — which is the whole argument of Act 3c's cliff,
+arriving two acts early and for free.
+
+**Row 4 shows the other failure mode.** It answers `two ducks` — a number, the wrong
+one, and it's "two" because "two" is in the prompt. It hands back the most salient
+number in context rather than computing. So "it doesn't answer wrongly, it doesn't
+answer at all" is only half true: it also copies.
+
+These five were chosen by measuring ~20 candidates on the real checkpoint, replacing
+an earlier four that ran 99.4 / 46.1 / 14.0 / 8.8.
 
 `--slots` computes that closing line from what it measured rather than hardcoding
 it, so it can't drift on a retrain. The retired checkpoint gave 99.1 / 2.5 / 1.2 /
