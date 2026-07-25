@@ -47,7 +47,13 @@ PY
 # paired with the wrong map trains happily and means something else, so they
 # travel as a pair and the trainer cross-checks them.
 export CELLS_REPO="${CELLS_REPO:-chrishayuk/v11-cells-midtrain-corpus}"
-: "${CELLS_EXPECT_SHA=}"
+
+# The identity these bytes MUST hash to, pinned here the same way the maths arm
+# pins its corpus. Without it the fetch is "whatever that repo happens to serve
+# today", which is exactly the property content-addressing exists to remove --
+# and a corpus is the one input a training run cannot sanity-check by reading.
+# Override with CELLS_EXPECT_SHA= (empty) to run against unverified bytes.
+: "${CELLS_EXPECT_SHA=2115d6aeff3428e217ef2903a8030facd511dcb00183e9fc3faaf49d01038767}"
 export CELLS_EXPECT_SHA
 
 echo "[cells] fetching corpus from $CELLS_REPO"
