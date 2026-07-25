@@ -5,6 +5,7 @@ python = "3.11"
 [entrypoints]
 train = "sh training/harness_pretrain/run.sh"
 midtrain = "sh training/run_mathonly_unit.sh"
+cells = "sh training/run_cells_unit.sh"
 
 [requires]
 min_vram_gb = 8
