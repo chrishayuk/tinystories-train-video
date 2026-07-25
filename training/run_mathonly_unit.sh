@@ -67,7 +67,13 @@ PY
 # With it, each worker re-proves determinism before spending any GPU time, and a
 # multi-seed replicate is guaranteed to share a corpus rather than assumed to.
 # Override with MATHONLY_EXPECT_SHA= (empty) to build without checking.
+#
+# Exported, not shell-local: train_mathonly.py stamps it into every checkpoint's
+# meta.json. A midtrain checkpoint inherits its corpus rather than producing it,
+# so without this the bytes carry no record of WHICH corpus taught them -- and
+# that is precisely the join two runs need to be comparable at all.
 : "${MATHONLY_EXPECT_SHA=ff7bf26b359914344317729678884fb9fd8f1bac8e6916d67de416ab46fdf33f}"
+export MATHONLY_EXPECT_SHA
 
 echo "[mathonly] building corpus (seed 90; identity-checked)"
 python3 training/build_mathonly_corpus.py --drill 90000 --seed 90 \

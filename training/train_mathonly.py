@@ -78,13 +78,17 @@ def sample(model, tok, device, max_seq, max_new=14):
 
 
 def report_samples(model, tok, device, max_seq, label):
+    """Print the emergence row, and hand it back so a checkpoint can record it."""
+    rows = sample(model, tok, device, max_seq)
     print(f"  [samples] {label}", flush=True)
-    for prompt, note, cont in sample(model, tok, device, max_seq):
+    for prompt, note, cont in rows:
         print(f"    {prompt!r} -> {cont!r}", flush=True)
         print(f"        {note}", flush=True)
+    return rows
 
 
-def write_harness_ckpt(model, ckpt_dir: Path, step: int, tokens: int, cfg):
+def write_harness_ckpt(model, ckpt_dir: Path, step: int, tokens: int, cfg,
+                       provenance: dict, samples: list | None = None):
     """step_<n>/model.safetensors + meta.json + .ready -- the layout the control
     plane's ingest looks for. `.ready` is touched last, so a checkpoint that is
     still being written is never picked up.
@@ -92,16 +96,29 @@ def write_harness_ckpt(model, ckpt_dir: Path, step: int, tokens: int, cfg):
     Real safetensors, not a renamed torch.save: downstream consumers parse it as
     such. Tied embed/lm_head share storage, which safetensors refuses, so every
     tensor is cloned to break the aliasing first.
+
+    meta.json carries the whole join, not just the step counter. A midtrain
+    checkpoint's tokenizer, base weights and corpus are all inherited rather
+    than produced here, so nothing in the bytes records them -- and a checkpoint
+    paired with the wrong tokenizer generates fluent nonsense instead of
+    erroring. publish_pretrain_hf.py refuses to publish without `tokenizer_hash`
+    for exactly that reason, which this is what satisfies.
     """
     from safetensors.torch import save_file
     d = ckpt_dir / f"step_{step}"
     d.mkdir(parents=True, exist_ok=True)
     state = {k: v.detach().clone().contiguous().cpu() for k, v in model.state_dict().items()}
     save_file(state, str(d / "model.safetensors"))
-    (d / "meta.json").write_text(json.dumps({
+    meta = {
         "step": step, "tokens": tokens, "arch": "tinymodel-115M dim512 L20",
         "vocab_size": cfg.vocab_size, "phase": "mathonly-midtrain",
-    }))
+        **provenance,
+    }
+    if samples is not None:
+        # Act 3's emergence table as data, in the shape publish_pretrain_hf.py's
+        # read_emergence() already knows how to read: prompt -> continuation.
+        meta["samples"] = {prompt: cont for prompt, _note, cont in samples}
+    (d / "meta.json").write_text(json.dumps(meta, indent=2) + "\n")
     (d / ".ready").touch()
     print(f"  [harness ckpt] step_{step} ({tokens/1e6:.2f}M tok)", flush=True)
 
@@ -267,7 +284,41 @@ def main():
 
     from demo_common import V11Tokenizer
     tok = V11Tokenizer()
-    report_samples(base, tok, device, cfg.max_seq, "step 0 (base, before any maths)")
+
+    # What this checkpoint inherited rather than produced. None of it is
+    # recoverable from the weights, and every item was verified by something
+    # upstream rather than asserted here: V11Tokenizer refuses to construct
+    # unless the file on disk hashes to the published build, and the entrypoint
+    # refuses to start unless the base checkpoint and the corpus hash to the
+    # identities named in these environment variables.
+    import hashlib
+    provenance = {
+        "tokenizer_hash": tok.SHA256,
+        "base_repo": os.environ.get("BASE_REPO") or None,
+        "base_sha256": os.environ.get("EXPECT_SHA") or None,
+        "corpus_identity": os.environ.get("MATHONLY_EXPECT_SHA") or None,
+        "corpus_file_sha256": hashlib.sha256(Path(args.corpus).read_bytes()).hexdigest(),
+        "seed": args.seed,
+        "run_id": os.environ.get("CHUK_RUN_ID") or None,
+        "lr": args.lr,
+        "batch_size": args.bs,
+        "token_budget": args.tokens,
+    }
+
+    step0 = report_samples(base, tok, device, cfg.max_seq, "step 0 (base, before any maths)")
+
+    # Prove the checkpoint WRITE path before producing anything worth losing.
+    # A run that trains for forty minutes and then discovers its first save
+    # boundary cannot upload has spent the forty minutes; step_0 costs seconds
+    # and one 460MB write, and it is also the honest zero row of the emergence
+    # curve -- the base model's answers, from this run, on this device.
+    #
+    # It makes the failure VISIBLE early, not fatal: the trainer has no
+    # credentials to ask the control plane whether the bytes landed. Checking
+    # `list_checkpoints` a minute in is the other half, and belongs to whoever
+    # dispatched the run.
+    if chuk_ckpt:
+        write_harness_ckpt(base, Path(chuk_ckpt), 0, 0, cfg, provenance, step0)
 
     import random
     rng = random.Random(args.seed)
@@ -341,7 +392,13 @@ def main():
                 # entrypoint, nine times, never getting past step ~1600. No
                 # traceback, which is what a SIGKILL looks like.
                 if chuk_ckpt:
-                    write_harness_ckpt(base, Path(chuk_ckpt), step, seen_tokens, cfg)
+                    # Sampled here rather than reusing the --sample-every report:
+                    # the two intervals need not coincide, and a milestone whose
+                    # recorded generations came from a different step is worse
+                    # than one with none. Greedy, so this is a repeat of work
+                    # done moments later at best, not a divergence.
+                    write_harness_ckpt(base, Path(chuk_ckpt), step, seen_tokens, cfg,
+                                       provenance, sample(base, tok, device, cfg.max_seq))
                 else:
                     snap = out_path.with_name(f"{out_path.stem}_s{step}{out_path.suffix}")
                     torch.save(base.state_dict(), snap)
@@ -357,10 +414,10 @@ def main():
     print(f"== done: {step} steps, {seen_tokens/1e6:.2f}M tokens | "
           f"val NLL {nll0:.4f} -> {nll1:.4f} ({time.time()-t0:.0f}s) ==", flush=True)
 
-    report_samples(base, tok, device, cfg.max_seq, f"FINAL ({seen_tokens/1e6:.2f}M tok)")
+    final = report_samples(base, tok, device, cfg.max_seq, f"FINAL ({seen_tokens/1e6:.2f}M tok)")
 
     if chuk_ckpt:
-        write_harness_ckpt(base, Path(chuk_ckpt), step, seen_tokens, cfg)
+        write_harness_ckpt(base, Path(chuk_ckpt), step, seen_tokens, cfg, provenance, final)
 
     torch.save(base.state_dict(), out_path)
     print(f"saved {out_path}")
