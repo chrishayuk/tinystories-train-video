@@ -60,6 +60,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -127,6 +128,75 @@ MAX_AVG_WORD_LEN = 8.0
 
 def sha256_file(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+REPLAY_LOG = "train_replay.jsonl"
+DONE_MARKER = "[v11-pretrain] done"
+
+
+class _Tee:
+    """Timestamp every stdout line into <run dir>/train_replay.jsonl.
+
+    A 16M-token run takes ~2h and is the Act 1 centrepiece; it gets filmed by
+    replaying this file, not by anyone watching two hours of terminal (see
+    training/replay_run.py). Timing has to be recorded here because it cannot be
+    recovered afterwards: the stalls, the checkpoint writes and the sample
+    generations are most of what the wall clock consists of, and none of them
+    leave a trace in metrics.jsonl.
+
+    Costs one small append per printed line, which against a 0.4s training step
+    is nothing. Never fails the run: if the log cannot be written, training
+    carries on and only the replay is lost.
+    """
+
+    def __init__(self, stream, path: Path, t0: float):
+        self._stream, self._path, self._t0 = stream, path, t0
+        self._buf = ""
+        self._ok = True
+
+    def write(self, text):
+        self._stream.write(text)
+        self._buf += text
+        while "\n" in self._buf:
+            line, self._buf = self._buf.split("\n", 1)
+            self._record(line)
+        return len(text)
+
+    def _record(self, line: str):
+        if not self._ok:
+            return
+        try:
+            with self._path.open("a") as f:
+                f.write(json.dumps({"t": round(time.time() - self._t0, 3),
+                                    "line": line}) + "\n")
+        except OSError:
+            self._ok = False  # a broken replay log must not break training
+
+    def flush(self):
+        self._stream.flush()
+
+    def __getattr__(self, name):
+        return getattr(self._stream, name)
+
+
+def completed_replay(run_dir: Path, total_steps: int) -> Path | None:
+    """An existing log for a run that finished, at this config's step count.
+
+    Guards against replaying something that isn't what was asked for: a run that
+    died halfway, or one of a different length. Matching on total_steps catches
+    the common case of editing total_tokens and expecting a fresh run.
+    """
+    for name in (REPLAY_LOG, "train.log"):
+        path = run_dir / name
+        if not path.is_file():
+            continue
+        text = path.read_text()
+        if DONE_MARKER not in text:
+            continue
+        m = re.search(r"total_steps=(\d+)", text)
+        if m and int(m.group(1)) == total_steps:
+            return path
+    return None
 
 
 # Protocol constant (chuk-train-proto/src/constants.rs CHECKPOINT_MODEL_FILE) --
@@ -408,6 +478,44 @@ def main() -> None:
 
     tokens_per_step = batch_size * max_seq
     milestone_steps = sorted({t // tokens_per_step for t in milestone_tokens})
+    total_steps_planned = max(1, total_tokens // tokens_per_step)
+
+    # --- already trained here? then don't spend 2h reproducing it ------------
+    #
+    # Never on a worker: CHUK_RUN_ID is set by the control plane and by nothing
+    # else, so a dispatched run always trains even if a stale log is lying about
+    # in the code unit. This is purely a local convenience -- and the one that
+    # makes filming Act 1e possible, since the command in the script stays the
+    # same and simply replays what it already did.
+    run_dir = metrics_path.parent
+    on_worker = bool(os.environ.get("CHUK_RUN_ID"))
+    forced = bool(os.environ.get("CHUK_FORCE_RETRAIN")) or "--force" in sys.argv
+    if not on_worker and not forced:
+        existing = completed_replay(run_dir, total_steps_planned)
+        if existing is not None:
+            print(
+                f"\n[v11-pretrain] this run has already been done here, and its log is "
+                f"intact.\n"
+                f"  log         {existing}\n"
+                f"  {total_steps_planned} steps ({total_tokens/1e6:.0f}M tokens), completed\n\n"
+                f"Not retraining. The weights are already in {ckpt_dir}, and the loss\n"
+                f"values in that log are the ones that produced them -- so replaying it\n"
+                f"shows the actual run rather than a second one just like it:\n\n"
+                f"  uv run training/replay_run.py {run_dir} --speed 60 --max-gap 2\n\n"
+                f"To train again from scratch, overwriting both:\n"
+                f"  CHUK_FORCE_RETRAIN=1 <same command>   (or pass --force)\n",
+                flush=True)
+            return
+
+    # Record timing for replay. After the early-return above, so a replay-skip
+    # never appends to the log it just declined to overwrite.
+    if not on_worker:
+        try:
+            run_dir.mkdir(parents=True, exist_ok=True)
+            (run_dir / REPLAY_LOG).write_text("")
+            sys.stdout = _Tee(sys.stdout, run_dir / REPLAY_LOG, time.time())
+        except OSError:
+            pass  # replay is a nicety; training is not
 
     resume_dir = os.environ.get("CHUK_RESUME_CKPT", "")
     start_step = 0
@@ -418,7 +526,7 @@ def main() -> None:
         model.load_state_dict(state)
         print(f"[v11-pretrain] resumed from step {start_step}", flush=True)
 
-    total_steps = max(1, total_tokens // tokens_per_step)
+    total_steps = total_steps_planned
     opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.01)
     sched = torch.optim.lr_scheduler.LambdaLR(
         opt, lambda s: min(1.0, (s + 1) / warmup_steps) * max(0.05, 1.0 - s / total_steps))

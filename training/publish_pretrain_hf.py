@@ -257,6 +257,17 @@ def build_release(step_dir: Path, out_dir: Path, args, meta: dict,
     # particular run did. Nothing here is re-derived -- it is copied from the
     # checkpoint's own meta.json and the run config.
     cfg = dict(arch)
+    # Drop model_type/architecture from the PUBLISHED copy (the source config
+    # keeps them). transformers reads config.json next to a tokenizer and warns
+    # "You are using a model of type `tinymodel` to instantiate a model of type
+    # ``" on every single load, because there is no registered architecture by
+    # that name -- nor should there be; TinyModel is not an AutoModel. Claiming a
+    # model_type transformers cannot resolve buys nothing and costs every
+    # downstream user a scary-looking warning.
+    cfg.pop("model_type", None)
+    cfg.pop("architecture", None)
+    cfg["_note"] = ("Not a transformers architecture. Build TinyModel from the "
+                    "tiny_model_v11/ package shipped in this repo -- see the model card.")
     cfg["pretrain_run"] = {
         "step": meta.get("step"),
         "tokens": meta.get("tokens"),
