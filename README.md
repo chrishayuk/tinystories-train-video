@@ -24,7 +24,6 @@ model_v11/               where the Act 1e checkpoint will land (empty — see be
 
 tokenizer/
   tokenizer.json              ★ the PUBLISHED v11 build — the only tokenizer here
-  v11_tokenizer_README.md     the knowledge-first tokenizer description
 
 unit.toml                the chuk-train code-unit manifest (must live at repo root)
 configs/
@@ -142,12 +141,11 @@ arithmetic that happens to be about the vocabulary. It reads the architecture
 from `training/harness_pretrain/config.json`, so it can't drift from the config
 the Act 1e run uses.
 
-> ⚠️ **`v11` needs `v11.vocab.bin`, and `cargo install` does not ship it** —
-> crates.io carries the binary, not the vocabulary. Today it comes from the
-> v-tokenizers checkout (`v11/artifacts/v11.vocab.bin`) via `--model`, or from
-> the `v11/tokenizer` entry in the chuk-datasets catalog. It is **not** in the
-> Hugging Face repo, which carries `tokenizer.json`. Worth closing before the
-> "everything I show you, you can check" claim goes on camera.
+`v11.vocab.bin` ships in the Hugging Face repo alongside `tokenizer.json`, so
+the CLI works from a clean machine with no clone — `cargo install v11-cli`,
+download that one file, done. crates.io carries code and not data, so without
+it every CLI example would be unrunnable. Verified end to end against the
+published copy.
 
 ## The published v11 tokenizer
 
