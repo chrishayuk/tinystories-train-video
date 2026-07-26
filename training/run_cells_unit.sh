@@ -68,9 +68,25 @@ for name in ("cells_corpus.jsonl", "cells_token_map.json"):
     shutil.copyfile(p, data / name)
     print(f"[cells] fetched {name} ({(data / name).stat().st_size/1e6:.1f} MB)")
 
-# The chuk-datasets identity, recomputed over what actually landed -- the same
-# function build_cells_corpus.py prints, so a mismatch here means the bytes on
-# this worker are not the bytes the corpus was registered as.
+# The 710 held-out stories BOTH arms score, fetched rather than re-derived. A
+# worker running this arm has no reason to hold the maths-only corpus, and the
+# first attempt at this run died 31 seconds in demanding one.
+#
+# Landed OUTSIDE the corpus root on purpose: the identity check below hashes
+# that DIRECTORY, so a third file inside it would change the corpus's hash and
+# the check would refuse its own bytes.
+shared = pathlib.Path("training/data"); shared.mkdir(parents=True, exist_ok=True)
+shutil.copyfile(hf_hub_download(repo, "shared_val_710.jsonl", repo_type="dataset"),
+                shared / "shared_val_710.jsonl")
+got = hashlib.sha256((shared / "shared_val_710.jsonl").read_bytes()).hexdigest()
+want = "e52ec44139f263653fd4b057307dad74a834c6f72d69fa77b83818e24d77f8f5"
+if got != want:
+    sys.exit(f"REFUSING: shared validation rows {got} != {want}")
+print(f"[cells] shared val rows verified {got[:16]}... (scored by BOTH arms)")
+
+# The chuk-datasets identity of the corpus, recomputed over what actually
+# landed -- the same function build_cells_corpus.py prints, so a mismatch here
+# means the bytes on this worker are not the bytes it was registered as.
 expect = os.environ.get("CELLS_EXPECT_SHA", "")
 if expect:
     files = sorted((p for p in data.rglob("*") if p.is_file()),
