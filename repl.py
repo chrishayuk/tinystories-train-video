@@ -192,6 +192,13 @@ class Session:
             ARTEFACTS, checkpoint=self.checkpoint)
         print(f"{DIM}{time.time()-t0:.1f}s{RESET}")
         check_vocab(self.config, self.sp, self.checkpoint)
+        # LEAVING BROKER MODE IS PART OF LOADING SOMETHING ELSE. Without this,
+        # /mathonly swaps the weights but leaves self.broker set, and the next
+        # /broker sees the flag, returns early and never reloads -- so Act 4 runs
+        # the MATHS checkpoint in broker mode and emits no call at all. The shoot
+        # order goes /broker (cold open) → /mathonly (3b) → /broker (4c), so this
+        # is the normal path through the video, not a corner.
+        self.broker = False
         n = sum(p.numel() for p in self.model.parameters())
         print(f"{DIM}  {n/1e6:.1f}M params · {self.config.n_layers} layers · "
               f"dim {self.config.dim} · vocab {self.config.vocab_size:,} · "
@@ -206,8 +213,14 @@ class Session:
         the base 71,260, grow the tied embedding to 72,052, then load the weights.
         `train_cells.py` does exactly this on the worker.
         """
-        if self.broker:
+        # Already in broker mode with the cells weights actually loaded.
+        if self.broker and self.model is not None:
             return True
+        # Coming back after /full or /mathonly: the Z80 host and its compiled
+        # cells survive the switch, so only the weights need reloading. Keeping
+        # the host matters -- compiling a cell is the slow part, and the second
+        # /broker in the running order is thirty seconds from the closing shot.
+        reentry = self.cells is not None
         if not CELLS_CKPT.exists():
             print(f"\n  {BOLD}No cells checkpoint.{RESET}\n")
             print(f"  {DIM}Expected {CELLS_CKPT.relative_to(HERE)}.")
@@ -242,11 +255,12 @@ class Session:
         self.model, self.config = model.to(device).eval(), cfg
         print(f"{DIM}{time.time()-t0:.1f}s{RESET}")
 
-        self.cells = {
-            "call": tmap["call"], "close": tmap["close"],
-            "inv": {v: k for k, v in tmap["cells"].items()},
-            "host": cell80.CellHost(), "handles": {},
-        }
+        if not reentry:
+            self.cells = {
+                "call": tmap["call"], "close": tmap["close"],
+                "inv": {v: k for k, v in tmap["cells"].items()},
+                "host": cell80.CellHost(), "handles": {},
+            }
         self.broker = True
         self.checkpoint = "cells (broker)"
         print(f"{DIM}  vocab {tmap['base_vocab']:,} → "
