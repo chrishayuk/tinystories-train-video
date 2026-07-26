@@ -333,14 +333,20 @@ def main() -> None:
         rng.shuffle(batches)
         return batches
 
-    trainable = list(base.parameters())
-    opt = torch.optim.AdamW(trainable, lr=args.lr, weight_decay=0.01)
-    total_steps_est = max(1, args.tokens // (args.bs * 30))
-    sched = torch.optim.lr_scheduler.LambdaLR(
-        opt, lambda s: min(1.0, (s + 1) / args.warmup) * max(0.05, 1.0 - s / total_steps_est))
-
     base.train()
     seen_tokens, step, losses = 0, 0, []
+
+    trainable = list(base.parameters())
+    opt = torch.optim.AdamW(trainable, lr=args.lr, weight_decay=0.01)
+    # Annealed on TOKENS, matching train_mathonly -- and this arm is why. See the
+    # long note there: the old step-denominated decay assumed 30 tokens per row,
+    # which is roughly true of the maths-only corpus and roughly half of this one,
+    # so at the same 12M budget this arm ran out of steps at 52% of peak LR while
+    # the arm it is paired against finished at 12%. A schedule that reads the
+    # corpus is not a schedule the two arms share.
+    sched = torch.optim.lr_scheduler.LambdaLR(
+        opt, lambda s: min(1.0, (s + 1) / args.warmup)
+                       * max(0.05, 1.0 - seen_tokens / args.tokens))
     done = False
     while not done:
         for chunk in epoch_batches():
@@ -352,9 +358,9 @@ def main() -> None:
             loss = (ce * w.reshape(-1)).sum() / w.sum().clamp(min=1)
             opt.zero_grad(); loss.backward()
             torch.nn.utils.clip_grad_norm_(trainable, 1.0)
+            seen_tokens += int(ids.numel())    # before sched.step(), which reads it
             opt.step(); sched.step()
             losses.append(loss.item())
-            seen_tokens += int(ids.numel())
             step += 1
             if chuk_metrics and step % 20 == 0:
                 with open(chuk_metrics, "a") as mf:

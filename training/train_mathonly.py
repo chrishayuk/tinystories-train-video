@@ -369,14 +369,35 @@ def main():
         rng.shuffle(batches)
         return batches
 
-    trainable = list(base.parameters())
-    opt = torch.optim.AdamW(trainable, lr=args.lr, weight_decay=0.01)
-    total_steps_est = max(1, args.tokens // (args.bs * 30))
-    sched = torch.optim.lr_scheduler.LambdaLR(
-        opt, lambda s: min(1.0, (s + 1) / args.warmup) * max(0.05, 1.0 - s / total_steps_est))
-
     base.train()
     seen_tokens, step, losses = 0, 0, []
+
+    trainable = list(base.parameters())
+    opt = torch.optim.AdamW(trainable, lr=args.lr, weight_decay=0.01)
+    # THE DECAY IS DENOMINATED IN TOKENS, BECAUSE THE BUDGET IS. It used to be
+    # `1 - step / (tokens // (bs * 30))` -- a step count estimated from an assumed
+    # 30 tokens per row. That assumption is a property of the CORPUS, not of the
+    # recipe, and the two arms' corpora do not share it: the maths-only rows
+    # average ~34 tokens, the cells rows ~60, because an S3 transcript is longer
+    # than most stories.
+    #
+    # Same 12M budget, therefore different step counts, therefore different
+    # learning rates at the end of a run that is meant to differ in ONE thing:
+    #
+    #     maths-only   22,012 steps of an estimated 25,000   ->  1.2e-5  (12% of peak)
+    #     cells        12,530 steps of the same 25,000       ->  5.2e-5  (52% of peak)
+    #
+    # The cells arm never annealed. Nothing errored -- it just quietly compared an
+    # arm that had cooled against one that had not, underneath the replay-NLL
+    # delta that is the entire output of the pair. Annealing on tokens consumed
+    # makes both arms trace one curve against the one budget they actually share,
+    # and both land on the 0.05 floor whatever their rows happen to weigh.
+    #
+    # Warmup stays in steps: it is about early optimiser noise, which is counted
+    # in updates, not in tokens.
+    sched = torch.optim.lr_scheduler.LambdaLR(
+        opt, lambda s: min(1.0, (s + 1) / args.warmup)
+                       * max(0.05, 1.0 - seen_tokens / args.tokens))
     log = []
     done = False
     while not done:
@@ -394,9 +415,9 @@ def main():
             loss = (ce * w.reshape(-1)).sum() / w.sum().clamp(min=1)
             opt.zero_grad(); loss.backward()
             torch.nn.utils.clip_grad_norm_(trainable, 1.0)
+            seen_tokens += int(ids.numel())    # before sched.step(), which reads it
             opt.step(); sched.step()
             losses.append(loss.item())
-            seen_tokens += int(ids.numel())
             step += 1
             if chuk_metrics and step % 20 == 0:
                 with open(chuk_metrics, "a") as mf:
