@@ -30,6 +30,7 @@ moment either is touched.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import sys
@@ -109,25 +110,49 @@ def resize_embedding(model, new_vocab: int) -> int:
     return n_old
 
 
-def shared_val_rows(mathonly_corpus: str):
-    """The maths-only arm's held-out replay rows, exactly as it slices them.
+def slice_val(rows):
+    """The held-out replay rows, sliced exactly as train_mathonly's main() does.
 
-    Duplicated from train_mathonly's main() rather than imported, because there
-    it is four lines inside a 300-line function. If that slicing ever changes,
-    this must change with it -- the two arms sharing a validation set is the only
-    thing that makes their NLLs comparable, and a silent divergence here would
-    not error, it would just quietly answer a different question.
+    Kept beside the loader so the two derivations can be compared at a glance.
+    If that slicing ever changes, this must change with it: the arms sharing a
+    validation set is the only thing making their NLLs comparable, and a silent
+    divergence here would not error -- it would quietly answer a different
+    question.
     """
-    path = Path(mathonly_corpus)
-    if not path.is_file():
-        raise SystemExit(
-            f"\nREFUSING: need the maths-only corpus at {path} for the SHARED\n"
-            f"validation split. Both arms must score the same held-out stories or\n"
-            f"their replay NLLs cannot be compared, which is the point of the pair.\n"
-            f"Build it with training/build_mathonly_corpus.py, or pass --val-corpus.\n")
-    rows = [json.loads(l) for l in path.read_text().splitlines() if l.strip()]
     replay_idx = [i for i, r in enumerate(rows) if len(r["ids"]) > 40]
     return [rows[i] for i in sorted(set(replay_idx[-max(10, len(replay_idx) // 10):]))]
+
+
+def load_shared_val(val_rows: str, val_corpus: str):
+    """The 710 stories BOTH arms score, as a published artifact when there is
+    one and as a derivation when there is not.
+
+    Published-first because a worker running this arm has no reason to hold the
+    maths-only corpus -- it fetches a cells corpus and nothing else, and the
+    first attempt at this run died 31 seconds in demanding a file that was never
+    going to be there. Re-deriving the split on every arm also means every arm
+    can get it subtly wrong; a file with a sha can only be right or absent.
+
+    The fallback stays for local use, where the corpus IS to hand and deriving
+    it is one less thing to keep in sync.
+    """
+    p = Path(val_rows)
+    if p.is_file():
+        rows = [json.loads(l) for l in p.read_text().splitlines() if l.strip()]
+        print(f"  shared val: {len(rows)} rows from {p.name} "
+              f"(sha {hashlib.sha256(p.read_bytes()).hexdigest()[:16]}…)", flush=True)
+        return rows
+    c = Path(val_corpus)
+    if not c.is_file():
+        raise SystemExit(
+            f"\nREFUSING: no shared validation set.\n"
+            f"  looked for the published rows at {p}\n"
+            f"  and the maths-only corpus to derive them from at {c}\n\n"
+            f"Both arms must score the same held-out stories or their replay NLLs\n"
+            f"cannot be compared, which is the entire point of running the pair.\n")
+    rows = slice_val([json.loads(l) for l in c.read_text().splitlines() if l.strip()])
+    print(f"  shared val: {len(rows)} rows derived from {c.name}", flush=True)
+    return rows
 
 
 def masked_batch(chunk, device):
@@ -181,8 +206,10 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--corpus", default=str(CORPUS))
     ap.add_argument("--token-map", default=str(TOKEN_MAP))
+    ap.add_argument("--val-rows", default=str(HERE / "data" / "shared_val_710.jsonl"),
+                    help="the published 710 stories BOTH arms score (preferred)")
     ap.add_argument("--val-corpus", default=str(HERE / "data" / "mathonly_corpus.jsonl"),
-                    help="corpus whose held-out replay rows BOTH arms validate on")
+                    help="fallback: derive the shared split from this corpus")
     ap.add_argument("--base-checkpoint", default="model_full.pt")
     ap.add_argument("--out", default="model_cells.pt")
     ap.add_argument("--tokens", type=int, default=12_000_000)
@@ -253,7 +280,7 @@ def main() -> None:
     # So both arms score the same 710 rows, and 1.5893 -> x means the same thing
     # in each. Those rows are held out of THIS corpus's training set by text, not
     # by index, because the two builds select replay independently.
-    val = shared_val_rows(args.val_corpus)
+    val = load_shared_val(args.val_rows, args.val_corpus)
     held_text = {r["text"] for r in val}
     train = [r for r in rows if r["text"] not in held_text]
     dropped = len(rows) - len(train)
