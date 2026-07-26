@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # /// script
 # requires-python = ">=3.11"
-# dependencies = ["torch>=2.2", "tokenizers>=0.20", "pyarrow>=14", "numpy"]
+# dependencies = ["torch>=2.2", "tokenizers>=0.20", "safetensors>=0.4", "pyarrow>=14", "numpy"]
 # ///
 """Interactive REPL for TinyModel v11 — for typing prompts live on camera.
 
@@ -28,7 +28,7 @@ Commands (type these instead of a prompt):
   /full            switch to model_full.pt   (after phase 1/2, 16M tokens) — default
   /compiled        switch to model_compiled.pt (after phase 3, frozen FFN; not run yet)
   /mathonly        switch to model_mathonly.pt (Act 3: maths mid-trained, no cells)
-  /broker          let the model call Z80 cells — Act 4 (not built yet)
+  /broker          let the model call Z80 cells — Act 4
   /slow            add a delay per token, for camera pacing
   /fast            no delay (default)
   /help  /quit
@@ -102,6 +102,43 @@ except ImportError:
     pass
 
 
+# The cell's return is printed in a DIFFERENT colour from the model's tokens, and
+# labelled. That distinction IS Act 4's argument: if the answer looks like model
+# output, the act has no point.
+CYAN = "\033[96m"
+
+# The cells checkpoint lives outside model_v11/artifacts/ because it has its own
+# vocabulary -- 72,052 rows against config.json's 71,260 -- so load_from_artifacts
+# cannot build it and export_repl_checkpoint.py rightly refuses it.
+CELLS_CKPT = HERE / "runs" / "cells-s80" / "ckpt" / "step_12504"
+CELLS_TOKEN_MAP = HERE / "training" / "data" / "cells" / "cells_token_map.json"
+CELL_SOURCES = Path.home() / "chris-source" / "cell80" / "cell80" / "cells"
+
+
+def find_cell80():
+    """cell80_py lives only in the uv cache -- there is no installable pin.
+
+    Try the import first in case PYTHONPATH is already set, then walk the cache.
+    Most cached builds are too old and reject safe_div.rs's `a / b`, so a build
+    that imports is not necessarily one that works; the compile error surfaces at
+    add_source() time with a clear message, which is soon enough.
+    """
+    try:
+        import cell80_py
+        return cell80_py
+    except ImportError:
+        pass
+    cache = Path.home() / ".cache" / "uv" / "archive-v0"
+    for d in sorted(cache.glob("*/cell80_py"), reverse=True):
+        sys.path.insert(0, str(d.parent))
+        try:
+            import cell80_py
+            return cell80_py
+        except ImportError:
+            sys.path.pop(0)
+    return None
+
+
 class Session:
     def __init__(self):
         self.temperature = 0.8
@@ -109,6 +146,9 @@ class Session:
         self.greedy = False
         self.max_new = 60
         self.delay = 0.0
+        # Broker mode: the cells checkpoint plus a live Z80. Off until /broker.
+        self.broker = False
+        self.cells = None
         # phase 1 of the Act 1e lineage. NOT model_compiled.pt: that is the
         # phase-3 frozen-FFN checkpoint, and phase 3 has not been run on the
         # published tokenizer yet.
@@ -158,6 +198,85 @@ class Session:
               f"{self.device}{RESET}")
         return True
 
+    def load_broker(self):
+        """Switch to the cells checkpoint and wake a Z80. Returns False on failure.
+
+        Three steps rather than a load, and all three are forced by the same fact:
+        this is the one model in the project with an extended vocabulary. Build at
+        the base 71,260, grow the tied embedding to 72,052, then load the weights.
+        `train_cells.py` does exactly this on the worker.
+        """
+        if self.broker:
+            return True
+        if not CELLS_CKPT.exists():
+            print(f"\n  {BOLD}No cells checkpoint.{RESET}\n")
+            print(f"  {DIM}Expected {CELLS_CKPT.relative_to(HERE)}.")
+            print(f"  Pull it from the control plane, or run Act 4b's training"
+                  f" arm.{RESET}\n")
+            return False
+        cell80 = find_cell80()
+        if cell80 is None:
+            print(f"\n  {BOLD}cell80_py not found.{RESET}\n")
+            print(f"  {DIM}It exists only in the uv cache — there is no installable")
+            print(f"  pin. Set PYTHONPATH to a build that compiles safe_div.rs;")
+            print(f"  run_broker.sh carries the recipe for finding one.{RESET}\n")
+            return False
+
+        import json
+        from safetensors.torch import load_file
+        from tiny_model_v11 import load_from_artifacts
+        sys.path.insert(0, str(HERE / "training"))
+        from train_cells import resize_embedding
+
+        tmap = json.loads(CELLS_TOKEN_MAP.read_text())
+        self.tokenizer()
+        print(f"{DIM}loading cells checkpoint …{RESET}", end=" ", flush=True)
+        t0 = time.time()
+        model, cfg = load_from_artifacts(ARTEFACTS, checkpoint="model_full.pt",
+                                         device="cpu")
+        resize_embedding(model, tmap["extended_vocab"])
+        state = load_file(str(CELLS_CKPT / "model.safetensors"))
+        model.load_state_dict(state, strict=True)
+        device = ("mps" if torch.backends.mps.is_available()
+                  else "cuda" if torch.cuda.is_available() else "cpu")
+        self.model, self.config = model.to(device).eval(), cfg
+        print(f"{DIM}{time.time()-t0:.1f}s{RESET}")
+
+        self.cells = {
+            "call": tmap["call"], "close": tmap["close"],
+            "inv": {v: k for k, v in tmap["cells"].items()},
+            "host": cell80.CellHost(), "handles": {},
+        }
+        self.broker = True
+        self.checkpoint = "cells (broker)"
+        print(f"{DIM}  vocab {tmap['base_vocab']:,} → "
+              f"{tmap['extended_vocab']:,} · Z80 ready · "
+              f"model tokens in {GREEN}green{RESET}{DIM}, "
+              f"cell returns in {CYAN}cyan{RESET}{DIM}{RESET}\n")
+        return True
+
+    def run_cell(self, span):
+        """Execute the call this </call> just closed. Returns its result or None."""
+        c = self.cells
+        toks = [x for x in span if x in c["inv"]]
+        if not toks:
+            return None
+        name = c["inv"][toks[0]]
+        digits = [x for x in span if x < self.sp.get_piece_size()]
+        args = [int(s) for s in self.sp.decode(digits).split()
+                if s.lstrip("-").isdigit()]
+        if name not in c["handles"]:
+            src = next(CELL_SOURCES.rglob(f"{name}.rs"), None)
+            if src is None:
+                return None
+            c["host"].add_source(name, src.read_text())
+            c["handles"][name] = c["host"].load(name)
+        r = c["host"].run(c["handles"][name], args)
+        res = r["result"] if r.get("halt") == "returned" else None
+        print(f"\n  {CYAN}[cell]{RESET} {name}({', '.join(map(str, args))}) "
+              f"{DIM}→{RESET} {BOLD}{res}{RESET}", flush=True)
+        return res
+
     @property
     def device(self):
         return next(self.model.parameters()).device
@@ -200,11 +319,44 @@ class Session:
 
                 ids.append(nxt)
                 n += 1
+
+                # BROKER MODE. The special tokens sit above the tokenizer's range,
+                # so they cannot go through decode() -- they are printed as markers
+                # and the surrounding runs decoded around them. On </call> the span
+                # back to <call> is executed and the verified digits are spliced in,
+                # in the cell's colour rather than the model's.
+                if self.broker:
+                    c = self.cells
+                    if nxt in (c["call"], c["close"]) or nxt in c["inv"]:
+                        marker = ("<call>" if nxt == c["call"] else
+                                  "</call>" if nxt == c["close"] else
+                                  f"⟨{c['inv'][nxt]}⟩")
+                        print(f"{RESET}{CYAN} {marker}{RESET}{GREEN}",
+                              end="", flush=True)
+                        shown = self.sp.decode([i for i in ids
+                                                if i < self.sp.get_piece_size()])
+                        if nxt == c["close"]:
+                            back = next(i for i, x in enumerate(reversed(ids))
+                                        if x == c["call"])
+                            res = self.run_cell(ids[len(ids) - 1 - back:])
+                            if res is not None:
+                                print(f"  {CYAN}{res}{RESET}{GREEN}",
+                                      end="", flush=True)
+                                ids.extend(self.sp.encode(f" {res}"))
+                                shown = self.sp.decode(
+                                    [i for i in ids if i < self.sp.get_piece_size()])
+                        if self.delay:
+                            time.sleep(self.delay)
+                        continue
                 # decode-whole-then-diff keeps spacing correct. Hold back any
                 # trailing U+FFFD: the model emits byte-fallback tokens that
                 # only form valid UTF-8 once the next byte arrives, and printing
                 # a half-formed character puts mojibake on screen.
-                full = self.sp.decode(ids).rstrip("�")
+                # In broker mode the id list carries tokens the tokenizer has never
+                # heard of, so decode only the ones it can.
+                decodable = ([i for i in ids if i < self.sp.get_piece_size()]
+                             if self.broker else ids)
+                full = self.sp.decode(decodable).rstrip("�")
                 if len(full) > len(shown):
                     print(full[len(shown):], end="", flush=True)
                     shown = full
@@ -326,16 +478,6 @@ def show_loop():
     print(f"  people imagine is complicated.{RESET}\n")
 
 
-def broker_not_built():
-    print(f"\n  {BOLD}/broker is not built yet.{RESET}\n")
-    print("  It needs Act 4's cell-call checkpoint, which was trained on the")
-    print("  retired 71261-vocab tokenizer and has to be rebuilt on the published")
-    print("  one before the model can emit a call at all.\n")
-    print(f"  {DIM}See SCRIPT.md \"What still needs running\" item 5c. The")
-    print(f"  non-interactive version is ./run_broker.sh, blocked for the same")
-    print(f"  reason.{RESET}\n")
-
-
 def main():
     s = Session()
     print(BANNER)
@@ -377,7 +519,7 @@ def main():
                 if s.ensure_model():
                     s.slots()
             elif cmd == "/broker":
-                broker_not_built()
+                s.load_broker()
             elif cmd == "/next":
                 if rest and s.ensure_model():
                     s.next_words(rest)
