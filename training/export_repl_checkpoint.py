@@ -55,6 +55,11 @@ def main() -> None:
     ap.add_argument("--step", type=int, default=None, help="default: highest complete")
     ap.add_argument("--out", default="model_full.pt")
     args = ap.parse_args()
+    # Resolved, because the provenance line below records the checkpoint's path
+    # relative to the repo root -- and `relative_to` throws outright when one side
+    # is relative and the other absolute. A relative --ckpt-dir is the natural
+    # thing to type, and it crashed *after* the 600MB load rather than before it.
+    args.ckpt_dir = args.ckpt_dir.resolve()
 
     import torch
     from safetensors.torch import load_file

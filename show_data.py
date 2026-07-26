@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # /// script
 # requires-python = ">=3.11"
-# dependencies = ["datasets>=2.18", "tokenizers>=0.20"]
+# dependencies = ["tokenizers>=0.20", "pyarrow>=14"]
 # ///
 """Act 1c — what the model is actually trained on.
 
@@ -17,6 +17,7 @@ actually sees, and works out how much of the 16M-token budget one story is.
 """
 
 import argparse
+import io
 import sys
 from pathlib import Path
 
@@ -30,6 +31,93 @@ TOKENS_PHASE1 = 16_000_000
 
 DIM, GREEN, BOLD, RESET = "\033[2m", "\033[92m", "\033[1m", "\033[0m"
 
+# The first training shard, addressed by revision. The sha is IN THE URL rather
+# than in a `revision=` keyword, which suits the beat this feeds: the address is
+# the pin, and a viewer can paste it into a browser.
+DATA_URL = ("https://huggingface.co/datasets/roneneldan/TinyStories/resolve/"
+            f"{HUB_SHA}/data/train-00000-of-00004-2d5a1467fff1081b.parquet")
+
+
+class _HTTPRangeFile(io.RawIOBase):
+    """The seekable file parquet wants, backed by HTTP range requests.
+
+    Parquet keeps its footer at the END of the file, so a reader seeks there
+    first, learns where the row groups are, and then reads only the one it wants.
+    That means the whole 249MB shard never moves -- three range requests is the
+    entire cost of the first thousand stories.
+    """
+
+    def __init__(self, url: str):
+        from urllib.request import Request, urlopen
+        self._Request, self._urlopen = Request, urlopen
+        self.url, self.pos, self.requests = url, 0, 0
+        with urlopen(Request(url, method="HEAD")) as r:
+            self.size = int(r.headers["Content-Length"])
+
+    def readable(self) -> bool:
+        return True
+
+    def seekable(self) -> bool:
+        return True
+
+    def tell(self) -> int:
+        return self.pos
+
+    def seek(self, offset, whence=io.SEEK_SET):
+        self.pos = (offset if whence == io.SEEK_SET
+                    else self.pos + offset if whence == io.SEEK_CUR
+                    else self.size + offset)
+        return self.pos
+
+    def read(self, n=-1):
+        if n is None or n < 0:
+            n = self.size - self.pos
+        if n == 0 or self.pos >= self.size:
+            return b""
+        end = min(self.pos + n, self.size) - 1
+        req = self._Request(self.url, headers={"Range": f"bytes={self.pos}-{end}"})
+        with self._urlopen(req) as resp:
+            data = resp.read()
+        self.requests += 1
+        self.pos += len(data)
+        return data
+
+
+def fetch_stories(rows: int, skip: int) -> list[str]:
+    """The first `rows` stories after `skip`, read from the pinned parquet shard.
+
+    THIS USED TO GO THROUGH `datasets` STREAMING, AND THAT BROKE THE REPL. Loading
+    a HuggingFace dataset in a process that has imported torch leaves the two
+    libraries' teardown waiting on each other: /data worked, printed, returned to
+    the prompt -- and then the REPL could never exit. Reproduced down to three
+    lines (`import torch; import show_data; show_data.main([])`) and killed at
+    five minutes. show_data.py alone was always fine, because nothing in it
+    imports torch, which is exactly why the bug survived being "verified".
+
+    Reading the parquet directly needs pyarrow and nothing else, so the REPL never
+    loads `datasets` at all -- and it is faster besides: three range requests
+    against a 249MB shard rather than a streaming connection.
+
+    IT HAS TO BE THE PARQUET, NOT `TinyStories-train.txt`. The plain-text file is
+    the obvious shortcut and it is subtly wrong: it collapses paragraph breaks,
+    so its first story is 699 characters where the parquet's is 701. The model was
+    trained through the parquet, and this act's claim is that what is on screen is
+    what went in -- two characters is enough to make that false.
+    """
+    import pyarrow.parquet as pq
+
+    want = rows + skip
+    handle = _HTTPRangeFile(DATA_URL)
+    pf = pq.ParquetFile(handle)
+    out: list[str] = []
+    for group in range(pf.num_row_groups):
+        out += pf.read_row_group(group, columns=["text"]).column("text").to_pylist()
+        if len(out) >= want:
+            break
+    if len(out) < want:
+        raise SystemExit(f"\nshard holds {len(out)} stories; asked for {want}.\n")
+    return [s.strip() for s in out[skip:want]]
+
 
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="/data")
@@ -38,21 +126,10 @@ def main(argv=None):
     ap.add_argument("--skip", type=int, default=0, help="skip N stories first")
     args = ap.parse_args(argv)
 
-    from datasets import load_dataset
-
     print(f"\n{BOLD}TinyStories{RESET} — the entire education of this model")
     print(f"{DIM}roneneldan/TinyStories, revision {HUB_SHA[:12]} (pinned){RESET}\n")
 
-    ds = load_dataset("roneneldan/TinyStories", split="train",
-                      streaming=True, revision=HUB_SHA)
-
-    stories = []
-    for i, row in enumerate(ds):
-        if i < args.skip:
-            continue
-        stories.append(row["text"].strip())
-        if len(stories) >= args.rows:
-            break
+    stories = fetch_stories(args.rows, args.skip)
 
     for i, text in enumerate(stories, 1):
         print(f"  {DIM}── story {i + args.skip} {'─' * 56}{RESET}")
