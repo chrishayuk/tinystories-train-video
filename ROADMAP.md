@@ -1,7 +1,40 @@
 # Roadmap — where this is and what to do next
 
-Written 2026-07-25. `script/SCRIPT.md` is the video plan; this is the *state* of the
-work behind it, so a cold start can pick up without re-deriving anything.
+Written 2026-07-25, updated 2026-07-26. `script/SCRIPT.md` is the video plan and
+`script/RECORD.md` is the shooting script; this is the *state* of the work behind
+them, so a cold start can pick up without re-deriving anything.
+
+---
+
+## 2026-07-26 — what changed, and the one thing that hurt
+
+**Act 4 is no longer the long pole.** Its training arm is self-contained here, it
+has run, delegation works, `/broker` is built into the REPL and the closing shot is
+typed live rather than canned. What Act 4 still lacks is *instruments*, not weights.
+
+**Both arms are measured and paired**, seed 80, same base, same budget, same
+schedule, same 710 held-out rows:
+
+```
+absorb  (CN-8, maths)  1.5893 → 1.6976   +6.8%   fails CN-7's registered P-e (≤+5%)
+delegate (CN-9, cells) 1.5940 → 1.5694   −1.5%   better than the model it started from
+```
+
+**A learning-rate bug was found and fixed** (`07bfb7d`). The decay was denominated
+in steps via a step count estimated from an assumed 30 tokens per row — a property
+of the *corpus*, not the recipe, and the two arms do not share it. At the same 12M
+budget the maths arm annealed to 12% of peak and the cells arm stopped at 52%. Every
+pre-fix run is superseded.
+
+**The two probes ran for the first time, and one overturned the act.**
+`cliff_probe` gives 0.99/1.00/1.00/0.87 in-range collapsing to ~0 one digit past,
+with the base model flat across all three bands — so the midtrain *creates* the
+cliff rather than revealing it. `heldout_probe` puts fact-unseen at **0.98**, which
+is row 2 of the pre-registered map, not row 1. "It memorised a table and generalised
+to nothing" is false and is out of the script.
+
+**What hurt: a run died at 96% and there was nothing to resume from.** See next
+actions.
 
 ---
 
@@ -55,6 +88,42 @@ work behind it, so a cold start can pick up without re-deriving anything.
 ---
 
 ## Next actions, in order
+
+### 0. A resume path — the highest-value engineering left ⛔
+
+**`cells-s80` reached step 12,000 of ~12,530 and was lost entirely.** Colab dropped
+the worker, the control plane requeued the run, and the run restarted from zero,
+because nothing in this repo can resume. Three minutes from the end, an hour thrown
+away. It has happened once and the exposure is permanent until this is built.
+
+Four things are missing, and only the first is hard:
+
+1. **Optimizer and scheduler state in the checkpoint.** `write_harness_ckpt` writes
+   `model.safetensors` + `meta.json` + `.ready` — weights only. AdamW's moments and
+   the LR schedule's position are both needed, and they are ~2× the model in bytes,
+   so this interacts with the 256MB control-plane ceiling in § 1.
+2. **A `--resume` flag** on `train_mathonly.py`, `train_cells.py` and
+   `train_phase3.py`, loading the newest complete `step_*` and continuing.
+3. **Data-order recovery.** `epoch_batches()` reshuffles from a seeded RNG whose
+   state dies with the process, so a resumed run is not bit-identical to an
+   uninterrupted one. Either persist the RNG state or accept and *document* that
+   resumed runs are not reproducible from the seed alone — the second is fine, the
+   silent version is not.
+4. **CP-side handoff.** `submit_run`'s docstring already claims a run "resumes from
+   its last checkpoint if the worker is lost mid-run". That is not true of any unit
+   here today; the control plane re-dispatches and the entrypoint starts over. Either
+   make it true or correct the docstring.
+
+**Until it exists, treat every run as all-or-nothing** and prefer shorter budgets
+over longer ones on Colab.
+
+### 0b. The lease does not self-drain, and I described it as though it did
+
+`colab_cell(lease_min=240)` produced a worker with **no lease registered** —
+`lease_status` returns `no lease`, and the worker ran 4.9 hours without draining. The
+drain-window behaviour in the bootstrap cell is either not wired or not reported.
+Worth knowing before planning a shoot around it: a Colab worker runs until Colab
+kills it, and § 0 is what makes that expensive.
 
 ### 1. Checkpoint upload — root cause found, fixed, deploying ⛔ still blocking
 

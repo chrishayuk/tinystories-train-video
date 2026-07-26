@@ -369,7 +369,20 @@ class Session:
         dt = time.time() - t0
         rate = f"{n/dt:.0f} tok/s" if dt > 0 and n else "—"
         mode = "greedy" if self.greedy else f"t={self.temperature}"
-        print(f"{RESET}\n  {DIM}{n} tokens · {dt:.1f}s · {rate} · {mode}{RESET}\n")
+        print(f"{RESET}\n  {DIM}{n} tokens · {dt:.1f}s · {rate} · {mode}{RESET}")
+
+        # SAY SO WHEN NOTHING CAME BACK. The model can stop on its first token --
+        # it did exactly that when a cell-shaped prompt was typed at the maths
+        # checkpoint, which is a real thing to do on camera by mistake. What the
+        # viewer saw was the prompt, then silence, then the prompt again: no
+        # output, no error, nothing to explain. Baffling silence is the worst
+        # failure mode available to a tool whose whole job is to be filmed, and
+        # it costs one dim line to make it legible instead.
+        if n == 0:
+            print(f"  {DIM}no output — it stopped immediately. Usually the prompt")
+            print(f"  belongs to a different checkpoint than the one loaded"
+                  f" ({self.checkpoint}).{RESET}")
+        print()
 
     @torch.no_grad()
     def next_words(self, prompt, k=10):
