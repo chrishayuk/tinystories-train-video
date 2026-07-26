@@ -117,6 +117,53 @@ Four things are missing, and only the first is hard:
 **Until it exists, treat every run as all-or-nothing** and prefer shorter budgets
 over longer ones on Colab.
 
+### 0a. A worker can heartbeat while its runner is dead, and nothing notices ⛔
+
+**Observed 2026-07-26, and it cost 1h45m of a T4.** Two seconds after
+`mathonly-s81` completed, `cells-s82` was assigned to the same worker. It never
+started. The control plane then cycled it — `assigned` →
+`assignment_timed_out` → `queued` → `assigned` — **seventy times over 103
+minutes**, on a strict ~90-second period, while the worker reported a healthy
+2.9-second heartbeat throughout.
+
+Telemetry from the middle of it says plainly that nothing was running:
+
+```
+gpu_util 0 · gpu_mem_used_bytes 0 · gpu_power_w 11.7 · gpu_temp_c 42 · cpu_util 0.02
+```
+
+The run has **no log lines at all**, so the job never reached the worker's
+executor. The heartbeat thread outlived whatever claims and runs work, and from
+the control plane's side those are indistinguishable: a worker that says
+`connected` every three seconds looks identical to a working one.
+
+**Nothing was lost** — the three queued runs are intact and everything already
+completed is safe. This is wasted lease, not wasted work. But it is a silent
+failure of exactly the kind this project keeps finding, and it compounds § 0:
+with no resume, a worker that quietly stops accepting work is the second way to
+lose an afternoon without being told.
+
+Four things worth doing, roughly in order of how cheap they are:
+
+1. **Give up on a worker that repeatedly fails to start.** Seventy identical
+   cycles is not a retry policy, it is a loop. After N consecutive
+   `assignment_timed_out` for the same (run, worker) pair, mark the worker
+   unhealthy and stop assigning to it.
+2. **Say so.** Nothing surfaced this — `list_runs` showed `queued`/`assigned`,
+   which reads as "waiting its turn". It took reading 141 lifecycle events to
+   see the loop. A run whose assignment has timed out more than once should be
+   visibly distinct from one that is simply waiting.
+3. **Heartbeat the runner, not the process.** The liveness signal should come
+   from the component that claims jobs, so that its death shows up as a
+   disconnect rather than as unexplained idleness.
+4. **Treat GPU-idle-while-assigned as a signal.** The telemetry already knows:
+   `gpu_util 0` on a worker holding an assignment is either a very long fetch
+   or a dead runner, and both are worth a warning.
+
+**Operational note until then:** if a queue stops advancing, check
+`run_events` rather than `list_runs`, and restart the Colab worker. The queued
+runs re-assign to a fresh worker with no loss.
+
 ### 0b. The lease does not self-drain, and I described it as though it did
 
 `colab_cell(lease_min=240)` produced a worker with **no lease registered** —
