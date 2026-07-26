@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # /// script
 # requires-python = ">=3.11"
-# dependencies = ["torch>=2.2", "tokenizers>=0.20", "datasets>=2.18", "numpy"]
+# dependencies = ["torch>=2.2", "tokenizers>=0.20", "pyarrow>=14", "numpy"]
 # ///
 """Interactive REPL for TinyModel v11 — for typing prompts live on camera.
 
@@ -46,6 +46,7 @@ all run against a repo with no checkpoint in it at all.
 """
 
 import json
+import os
 import sys
 import time
 from pathlib import Path

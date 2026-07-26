@@ -4,6 +4,7 @@ python = "3.11"
 
 [entrypoints]
 train = "sh training/harness_pretrain/run.sh"
+phase3 = "sh training/run_phase3_unit.sh"
 midtrain = "sh training/run_mathonly_unit.sh"
 cells = "sh training/run_cells_unit.sh"
 
