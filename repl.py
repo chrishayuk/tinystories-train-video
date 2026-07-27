@@ -31,6 +31,7 @@ Commands (type these instead of a prompt):
   /broker          let the model call Z80 cells — Act 4
   /slow            add a delay per token, for camera pacing
   /fast            no delay (default)
+  /clear           wipe the screen and the scrollback, between acts
   /help  /quit
 
 Ctrl-C stops a generation without leaving the REPL.
@@ -463,6 +464,41 @@ type a prompt and press enter · {DIM}/help for commands · ctrl-c stops generat
 """
 
 
+def print_header(s):
+    """The banner, plus one line saying what is actually loaded.
+
+    Reads the session rather than only config.json because /clear reprints it:
+    at startup nothing is loaded and the honest line is "no checkpoint loaded
+    yet", but by Act 3 there are weights in memory, and a freshly cleared frame
+    still claiming otherwise would put a false statement on camera at exactly
+    the moment the screen is cleanest.
+    """
+    print(BANNER)
+    if s.model is None:
+        cfg = json.loads(ARCH_CONFIG.read_text())
+        arch = (f"{cfg['n_layers']} layers · dim {cfg['dim']} · "
+                f"vocab {cfg['vocab_size']:,}")
+        state = "no checkpoint loaded yet"
+    else:
+        arch = (f"{s.config.n_layers} layers · dim {s.config.dim} · "
+                f"vocab {s.config.vocab_size:,}")
+        state = s.checkpoint
+    print(f"{DIM}{arch} · {state}{RESET}\n")
+
+
+def clear_screen(s):
+    """Wipe the frame between acts, and put the header back.
+
+    3J is the one that matters. 2J clears what is visible; 3J clears the
+    SCROLLBACK, and without it a "cleared" screen is one flick of the mouse
+    wheel away from showing the previous act — including the takes that did not
+    work. The header goes back because a bare prompt on a black screen gives
+    the edit nothing to cut to.
+    """
+    print("\033[2J\033[3J\033[H", end="", flush=True)
+    print_header(s)
+
+
 def show_config():
     """Act 1a — the architecture. What `bat …/config.json` used to do, minus
     leaving the REPL. Prints the arch keys only: the file also carries a
@@ -507,12 +543,9 @@ def show_loop():
 
 def main():
     s = Session()
-    print(BANNER)
-    cfg = json.loads(ARCH_CONFIG.read_text())
     # Architecture from config.json, not from a loaded model: nothing is loaded
     # yet. See the module docstring for why that is deliberate.
-    print(f"{DIM}{cfg['n_layers']} layers · dim {cfg['dim']} · vocab "
-          f"{cfg['vocab_size']:,} · no checkpoint loaded yet{RESET}\n")
+    print_header(s)
 
     while True:
         try:
@@ -583,6 +616,8 @@ def main():
             elif cmd == "/fast":
                 s.delay = 0.0
                 print(f"  {DIM}no delay{RESET}")
+            elif cmd in ("/clear", "/cls"):
+                clear_screen(s)
             else:
                 print(f"  {DIM}unknown command {cmd} — /help{RESET}")
             continue
